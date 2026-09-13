@@ -109,7 +109,9 @@ if (mode === 'testnet') {
   const id = process.env.DERIBIT_TESTNET_CLIENT_ID;
   const secret = process.env.DERIBIT_TESTNET_CLIENT_SECRET;
   if (id && secret) broker = new DeribitBroker('testnet', id, secret);
-  else problems.push('Connect your Deribit test account: paste DERIBIT_TESTNET_CLIENT_ID and DERIBIT_TESTNET_CLIENT_SECRET into the .env file in the project folder, then restart the bot. Prices show; nothing can trade yet.');
+  else problems.push(ONCE
+    ? 'Deribit test keys are not set up yet: add DERIBIT_TESTNET_CLIENT_ID and DERIBIT_TESTNET_CLIENT_SECRET as GitHub Actions secrets. Prices show; nothing can trade yet.'
+    : 'Connect your Deribit test account: paste DERIBIT_TESTNET_CLIENT_ID and DERIBIT_TESTNET_CLIENT_SECRET into the .env file in the project folder, then restart the bot. Prices show; nothing can trade yet.');
 } else {
   const id = process.env.DERIBIT_CLIENT_ID;
   const secret = process.env.DERIBIT_CLIENT_SECRET;
