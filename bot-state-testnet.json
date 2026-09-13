@@ -1,0 +1,52 @@
+{
+ "tradingOn": {
+  "BTC": true,
+  "ETH": false,
+  "SOL": false
+ },
+ "lastEntryDay": {},
+ "spreads": [],
+ "jobs": [],
+ "events": [
+  {
+   "t": "2026-09-13T12:09:29.059Z",
+   "level": "info",
+   "msg": "Bot started on the Deribit test exchange"
+  },
+  {
+   "t": "2026-09-13T12:11:23.259Z",
+   "level": "info",
+   "msg": "Bot started on the Deribit test exchange"
+  },
+  {
+   "t": "2026-09-13T14:23:06.429Z",
+   "level": "error",
+   "msg": "Could not read the Deribit account: fetch failed"
+  },
+  {
+   "t": "2026-09-13T14:23:14.495Z",
+   "level": "info",
+   "msg": "Deribit account readable again"
+  },
+  {
+   "t": "2026-09-13T14:45:18.402Z",
+   "level": "info",
+   "msg": "Bot started on the Deribit test exchange"
+  },
+  {
+   "t": "2026-09-13T15:29:34.978Z",
+   "level": "info",
+   "msg": "SOL: trading switched OFF on the dashboard"
+  },
+  {
+   "t": "2026-09-13T15:30:15.642Z",
+   "level": "info",
+   "msg": "SOL: trading switched OFF on the dashboard"
+  },
+  {
+   "t": "2026-09-13T15:40:24.365Z",
+   "level": "info",
+   "msg": "Bot started on the Deribit test exchange"
+  }
+ ]
+}
