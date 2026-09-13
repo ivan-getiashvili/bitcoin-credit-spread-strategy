@@ -1,16 +1,17 @@
 # Runs the put spread bot on GitHub's computers, so trading does not depend on a Mac
-# being awake. Each run is one cycle of `scripts/bot.ts --once`: settle expired spreads,
-# start the day's entry in its window, move working limit orders along, sample the
-# account, save a snapshot for the public dashboard. State lives on the `bot-state`
-# branch between runs. Deribit test keys come from the repository's Actions secrets.
+# being awake, and publishes the monitoring dashboard to GitHub Pages after every run.
+# Each run is one cycle of `scripts/bot.ts --once`: settle expired spreads, start the
+# day's entry in its window, move working limit orders along, sample the account, and
+# save a snapshot. State lives on the `bot-state` branch between runs. Deribit test keys
+# come from the repository's Actions secrets.
 name: Put spread bot
 
 on:
   schedule:
     # Entry window and order work: every 5 minutes, 08:00-10:59 UTC.
     - cron: '*/5 8-10 * * *'
-    # Settlement, reconciliation and an account sample every 3 hours.
-    - cron: '17 */3 * * *'
+    # The rest of the day: every 15 minutes, to keep the dashboard current.
+    - cron: '*/15 0-7,11-23 * * *'
   workflow_dispatch:
 
 # Never two cycles at once: two copies would each place the day's orders.
@@ -20,6 +21,8 @@ concurrency:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 jobs:
   cycle:
@@ -71,3 +74,26 @@ jobs:
           if git -C "$dir" diff --cached --quiet; then echo "State unchanged."; exit 0; fi
           git -C "$dir" commit -qm "Bot state $(date -u +%Y-%m-%dT%H:%MZ)"
           git -C "$dir" push -q origin bot-state
+
+      - name: Build the monitoring site
+        if: always()
+        run: |
+          [ -f data/public-state.json ] || { echo "No snapshot to publish."; exit 0; }
+          node --experimental-strip-types scripts/build-site.ts data/public-state.json
+
+      - name: Upload the monitoring site
+        if: always() && hashFiles('_site/index.html') != ''
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  pages:
+    needs: cycle
+    if: always() && needs.cycle.result != 'cancelled'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

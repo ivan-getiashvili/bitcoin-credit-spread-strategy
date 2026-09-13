@@ -598,12 +598,34 @@
     es.onmessage = (ev) => { S = JSON.parse(ev.data); received = Date.now(); $('dot').className = 'dot on'; render(); };
     es.onerror = () => { $('dot').className = 'dot'; $('conn').textContent = 'disconnected, retrying…'; };
   }
+  const ago = (ms) => {
+    const s = Math.max(0, Math.round(ms / 1000));
+    return s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`;
+  };
   setInterval(() => {
-    if (received && $('dot').className === 'dot on') $('conn').textContent = `live · updated ${Math.round((Date.now() - received) / 1000)}s ago`;
+    if (!received || $('dot').className !== 'dot on') return;
+    $('conn').textContent = window.__SNAPSHOT_URL__ ? `updated ${ago(Date.now() - received)} ago` : `live · updated ${ago(Date.now() - received)} ago`;
   }, 1000);
 
   // A saved snapshot (window.__FIXTURE__) renders without a running bot, for design checks.
+  // Static hosting (GitHub Pages): there is no bot to stream from, so read the snapshot the
+  // last scheduled run published, and look for a newer one every minute.
+  async function poll() {
+    try {
+      const res = await fetch(`${window.__SNAPSHOT_URL__}?t=${Date.now()}`, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      S = await res.json();
+      received = S.snapshotAt ?? Date.now();
+      $('dot').className = 'dot on';
+      render();
+    } catch {
+      $('dot').className = 'dot';
+      $('conn').textContent = 'could not load the latest data, retrying…';
+    }
+  }
+
   if (window.__FIXTURE__) { S = window.__FIXTURE__; received = Date.now(); $('dot').className = 'dot on'; render(); }
+  else if (window.__SNAPSHOT_URL__) { poll(); setInterval(poll, 60_000); }
   else connect();
 </script>
 </body>

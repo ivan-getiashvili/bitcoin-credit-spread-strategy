@@ -666,7 +666,7 @@ if (ONCE) {
     process.exitCode = 1;
   } finally {
     save();
-    writeFileSync(`${dirname(stateFile)}/public-state.json`, JSON.stringify(publicView()));
+    writeFileSync(`${dirname(stateFile)}/public-state.json`, JSON.stringify({ ...publicView(), snapshotAt: Date.now() }));
     for (const e of state.events.slice(-5)) console.log(`[event ${e.t}] ${e.msg}`);
   }
   process.exit();

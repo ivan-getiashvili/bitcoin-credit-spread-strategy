@@ -37,12 +37,18 @@ Part of `~/projects/algorithmic-trading-strategies/`.
     bear markets unless he asks. Build it and see where it goes.
 11. **Not on the Mac.** The bot runs on GitHub Actions (`.github/workflows/bot.yml`,
     chosen 2026-09-13 over a paid server).
-    - **Repo:** private, `ivan-getiashvili/bitcoin-credit-spread-strategy`, default
+    - **Repo:** PUBLIC since 2026-09-13 (Ivan's choice; the full history was scanned
+      clean of keys first), `ivan-getiashvili/bitcoin-credit-spread-strategy`, default
       branch `main`.
     - **Schedule:** each run is `scripts/bot.ts --once`, one cycle of about 20s.
-      Runs every 5 min 08:00-10:59 UTC and every 3 h otherwise (~1,300 of the
-      2,000 free private-repo minutes a month). GitHub can start scheduled runs
-      late. The concurrency group stops two cycles from overlapping.
+      Runs every 5 min 08:00-10:59 UTC and every 15 min otherwise; Actions minutes
+      are unlimited on public repos. GitHub can start scheduled runs late. The
+      concurrency group stops two cycles from overlapping.
+    - **Dashboard:** GitHub Pages at
+      https://ivan-getiashvili.github.io/bitcoin-credit-spread-strategy/. Each run
+      builds `_site/` with `npm run site` and deploys it. In `__SNAPSHOT_URL__` mode
+      the page reads `public-state.json` every minute and shows how old it is. No
+      custom domain yet: putspread.com is taken; putspread.net, .io and .app were free.
     - **State:** lives on the `bot-state` branch (`bot-state-testnet.json`,
       `equity-testnet.jsonl`, and `public-state.json` for the dashboard). That branch
       is the source of truth; local `data/` on the Mac is stale.
