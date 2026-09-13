@@ -40,12 +40,14 @@ export type PositionView = {
   delta: number;
 };
 
-export type AccountView = { currency: string; equity: number; availableFunds: number; initialMargin: number; maintenanceMargin: number };
+export type AccountView = { currency: string; equity: number; availableFunds: number; initialMargin: number; maintenanceMargin: number; marginModel: string };
 
 export interface Broker {
   readonly mode: 'testnet' | 'live';
   readonly base: string;
   limitOrder(side: Side, instrument: string, amount: number, price: number, label: string, currency: string): Promise<OrderView>;
+  /** Margin Deribit would require to buy or sell `amount` at `price`, in the settlement currency. */
+  margins(instrument: string, amount: number, price: number): Promise<{ buy: number; sell: number }>;
   /** Move a resting order to a new price, keeping its size. */
   editOrder(order: OrderView, price: number): Promise<OrderView>;
   cancelOrder(orderId: string): Promise<OrderView>;
@@ -189,6 +191,11 @@ export class DeribitBroker implements Broker {
       }));
   }
 
+  async margins(instrument: string, amount: number, price: number): Promise<{ buy: number; sell: number }> {
+    const r = await this.#call('private/get_margins', { instrument_name: instrument, amount: String(amount), price: String(price) });
+    return { buy: Number(r.buy) || 0, sell: Number(r.sell) || 0 };
+  }
+
   async accounts(): Promise<AccountView[]> {
     const r = await this.#call('private/get_account_summaries', {});
     return (r.summaries ?? []).map((s: any) => ({
@@ -197,6 +204,7 @@ export class DeribitBroker implements Broker {
       availableFunds: Number(s.available_funds) || 0,
       initialMargin: Number(s.initial_margin) || 0,
       maintenanceMargin: Number(s.maintenance_margin) || 0,
+      marginModel: String(s.margin_model ?? ''),
     }));
   }
 }

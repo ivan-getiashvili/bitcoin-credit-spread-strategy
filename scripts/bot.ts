@@ -1,26 +1,28 @@
 /**
- * The put spread bot: trades bull put spreads on a real Deribit account using limit
- * orders only, and serves a live monitoring dashboard at http://127.0.0.1:4191.
+ * The put spread bot. Every day, on each coin that is switched on, it opens Ivan's
+ * daily bull put spread on a real Deribit account (the test exchange by default),
+ * using limit orders only, and serves a live dashboard at http://127.0.0.1:4191.
  *
- *   npm run bot                      # Deribit test exchange (fake money); keys in .env
- *   npm run bot -- --config x.json   # alternative settings file
+ *   npm run bot
+ *   npm run bot -- --config other.json
  *
- * Every order goes to the exchange and shows in the account. Nothing opens until
- * Ivan switches a coin on: that switch is his judgment that the market is in a
- * range or rising, and the bot never makes that call. With a coin on, the bot starts
- * one entry per Friday window when the rule is met; "Enter now", "Close" and "Stop"
- * act at once. Account equity is sampled every minute for the curve and the ratios.
- * The dashboard listens on 127.0.0.1 only.
+ * Options are Deribit's USDC-settled ones (Deribit lists no USDT options), so every
+ * premium, risk figure and P&L is in dollars. A spread is one trade with one risk:
+ * the pair together may lose at most `riskPerTradePct` of the account value. With
+ * `capitalUsd` set, the account value is that demo capital plus the bot's own P&L,
+ * whatever the exchange balance. Coins trade by default; the dashboard switch pauses
+ * one. The dashboard listens on 127.0.0.1 only.
  */
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { dirname } from 'node:path';
 import { DeribitBroker, type AccountView, type Broker, type PositionView } from '../lib/broker.ts';
 import { getChain, getInstrumentSpecs, getOrderBook, getRecentDeliveryPrices, MAINNET, TESTNET, type InstrumentSpec, type Option } from '../lib/deribit.ts';
 import {
-  advanceJob, LEG, openEntry, openExit, phaseLimitMs, planEntry, settleSpread, stopJob, toUsd,
+  advanceJob, LEG, openEntry, openExit, phaseLimitMs, planDailySpread, settleSpread, sizeFor, stopJob,
   type ExecSettings, type JobContext, type MarketSettings, type Plan, type SpreadRecord,
 } from '../lib/executor.ts';
-import { MARKETS, type MarketId } from '../lib/markets.ts';
+import { DOLLAR_MARKETS as M, type MarketId } from '../lib/markets.ts';
 import { dealStats, downsample, equityStats } from '../lib/metrics.ts';
 import { viewSpread } from '../lib/monitor.ts';
 import { addEvent, appendSample, loadSamples, loadState, saveState } from '../lib/store.ts';
@@ -32,14 +34,18 @@ type BotConfig = {
   pollSeconds: number;
   /** Option chains, plans, settlement and the entry-window check, seconds. */
   chainSeconds: number;
-  /** One account-equity sample per this many seconds. */
+  /** One account-value sample per this many seconds. */
   sampleSeconds: number;
-  /** Across all coins. Weekly entries on ~28-day expiries overlap about four deep. */
+  /** Demo account value in dollars: risk and returns are measured against this plus the bot's P&L. null uses the exchange balance. */
+  capitalUsd: number | null;
+  /** Share of the current account value one whole spread may lose, percent. */
+  riskPerTradePct: number;
+  /** Across all coins. One spread per coin per day. */
   maxOpenSpreads: number;
   /** A spread turns "watch" when price is within this % above the sold put. */
   alertDistancePct: number;
-  /** Automatic entries: weekday (5 = Friday) and time window, UTC. Matches the backtest. */
-  entry: { weekdayUtc: number; fromUtc: string; toUtc: string };
+  /** Daily entry window, UTC. Deribit's options day starts at the 08:00 UTC settlement. */
+  entry: { fromUtc: string; toUtc: string };
   execution: ExecSettings;
   markets: Record<MarketId, MarketSettings>;
   stateFile?: string;
@@ -55,13 +61,36 @@ const mode = (arg('mode') ?? config.mode) as BotConfig['mode'];
 if (mode !== 'testnet' && mode !== 'live') throw new Error(`Unknown mode "${mode}": use testnet or live`);
 try { process.loadEnvFile('.env'); } catch { /* keys can also come from the environment */ }
 
-const IDS = Object.keys(MARKETS) as MarketId[];
+const IDS = Object.keys(M) as MarketId[];
 const stateFile = config.stateFile ?? `data/bot-state-${mode}.json`;
 const equityFile = config.equityFile ?? `data/equity-${mode}.jsonl`;
-const state = loadState(stateFile);
+const state = loadState(stateFile, Object.fromEntries(IDS.map((id) => [id, config.markets[id].enabled])) as Record<MarketId, boolean>);
 const samples = loadSamples(equityFile);
 const save = () => saveState(stateFile, state);
 const problems: string[] = [];
+
+// One bot per account: two copies would each open the day's spreads.
+const lockFile = `${stateFile}.lock`;
+try {
+  const other = Number(readFileSync(lockFile, 'utf8'));
+  if (other && other !== process.pid) {
+    process.kill(other, 0); // throws if that process is gone, leaving a stale lock
+    console.error(`Another copy of the bot (process ${other}) is already running on this account. Stop it first.`);
+    process.exit(1);
+  }
+} catch (e) {
+  const code = (e as NodeJS.ErrnoException).code;
+  if (code !== 'ENOENT' && code !== 'ESRCH') {
+    console.error(`Could not confirm no other copy of the bot is running (${code}). Not starting.`);
+    process.exit(1);
+  }
+}
+mkdirSync(dirname(lockFile), { recursive: true });
+writeFileSync(lockFile, String(process.pid));
+process.on('exit', () => {
+  try { if (Number(readFileSync(lockFile, 'utf8')) === process.pid) unlinkSync(lockFile); } catch { /* already gone */ }
+});
+for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => process.exit(0));
 const r8 = (x: number) => Math.round(x * 1e8) / 1e8;
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
 
@@ -80,7 +109,8 @@ if (mode === 'testnet') {
 }
 const base = mode === 'live' ? MAINNET : TESTNET;
 
-type MarketSnap = { spot?: number; sma50?: number; plan?: Plan; skip?: string; error?: string };
+type Sizing = { amount: number; riskUsd: number; minAmount: number };
+type MarketSnap = { spot?: number; sma50?: number; plan?: Plan; skip?: string; error?: string; size?: Sizing };
 const chains: Partial<Record<MarketId, { options: Option[]; spot: number }>> = {};
 const snaps: Record<MarketId, MarketSnap> = { BTC: {}, ETH: {}, SOL: {} };
 const sma: Partial<Record<MarketId, { at: number; value: number }>> = {};
@@ -90,7 +120,7 @@ const retryAt: Partial<Record<MarketId, number>> = {};
 const jobErrors = new Map<string, string>();
 let positions: PositionView[] = [];
 let accounts: AccountView[] = [];
-let equityUsd = NaN;
+let exchangeEquityUsd = NaN;
 let unpriced: string[] = [];
 let accountError = '';
 let positionWarning = '';
@@ -111,27 +141,20 @@ const minutes = (hhmm: string) => {
   const [h, m] = hhmm.split(':').map(Number);
   return h * 60 + m;
 };
-
-/** The date of this week's entry day, so each coin enters at most once per week. */
-function weekKey(now = new Date()): string {
-  const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() - config.entry.weekdayUtc + 7) % 7));
-  return d.toISOString().slice(0, 10);
-}
+const dayKey = (now = new Date()) => now.toISOString().slice(0, 10);
 
 function inEntryWindow(now = new Date()): boolean {
   const m = now.getUTCHours() * 60 + now.getUTCMinutes();
-  return now.getUTCDay() === config.entry.weekdayUtc && m >= minutes(config.entry.fromUtc) && m < minutes(config.entry.toUtc);
+  return m >= minutes(config.entry.fromUtc) && m < minutes(config.entry.toUtc);
 }
 
-function nextWindow(now = new Date()): { from: string; to: string } | null {
-  for (let i = 0; i < 8; i++) {
-    const day = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + i);
-    if (new Date(day).getUTCDay() !== config.entry.weekdayUtc) continue;
-    const to = day + minutes(config.entry.toUtc) * 60_000;
-    if (to > now.getTime()) return { from: new Date(day + minutes(config.entry.fromUtc) * 60_000).toISOString(), to: new Date(to).toISOString() };
-  }
-  return null;
+function nextWindow(now = new Date()): { from: string; to: string } {
+  let day = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  if (day + minutes(config.entry.toUtc) * 60_000 <= now.getTime()) day += 86_400_000;
+  return {
+    from: new Date(day + minutes(config.entry.fromUtc) * 60_000).toISOString(),
+    to: new Date(day + minutes(config.entry.toUtc) * 60_000).toISOString(),
+  };
 }
 
 const LIVE = new Set<SpreadRecord['status']>(['opening', 'open', 'long-only', 'closing']);
@@ -141,7 +164,7 @@ const workingJobs = () => state.jobs.filter((j) => j.phase !== 'done');
 async function specsFor(id: MarketId): Promise<Map<string, InstrumentSpec>> {
   const cached = specs[id];
   if (cached && Date.now() - cached.at < 6 * 3_600_000) return cached.map;
-  const map = await getInstrumentSpecs(MARKETS[id], base);
+  const map = await getInstrumentSpecs(M[id], base);
   specs[id] = { at: Date.now(), map };
   return map;
 }
@@ -149,8 +172,7 @@ async function specsFor(id: MarketId): Promise<Map<string, InstrumentSpec>> {
 function contextFor(id: MarketId, b: Broker, map: Map<string, InstrumentSpec>): JobContext {
   return {
     broker: b,
-    market: MARKETS[id],
-    settings: config.markets[id],
+    market: M[id],
     exec: config.execution,
     book: (name) => getOrderBook(name, 5, b.base),
     spec: (name) => map.get(name),
@@ -161,8 +183,29 @@ function contextFor(id: MarketId, b: Broker, map: Map<string, InstrumentSpec>): 
   };
 }
 
+/** Realised P&L of finished deals plus unrealised P&L of open ones; NaN if an open spread cannot be valued yet. */
+function strategyPnlUsd(): number {
+  let total = 0;
+  for (const sp of state.spreads) {
+    if (sp.status === 'closed' || sp.status === 'settled') total += sp.pnlUsd ?? 0;
+    else if (LIVE.has(sp.status) && (sp.amount > 0 || sp.spareLong > 0)) {
+      const live = viewSpread(M[sp.market], sp, chains[sp.market], config.alertDistancePct).live;
+      if (!live) return NaN;
+      total += live.unrealizedUsd;
+    }
+  }
+  return total;
+}
+
+/** The account value risk is sized from: demo capital plus the bot's P&L, or the exchange balance. */
+function accountValueUsd(): number {
+  if (config.capitalUsd === null || config.capitalUsd === undefined) return exchangeEquityUsd;
+  const pnl = strategyPnlUsd();
+  return Number.isFinite(pnl) ? config.capitalUsd + pnl : NaN;
+}
+
 async function refreshMarket(id: MarketId) {
-  const market = MARKETS[id];
+  const market = M[id];
   const chain = await getChain(market, base);
   chains[id] = chain;
   if (!sma[id] || Date.now() - sma[id]!.at > 30 * 60_000) {
@@ -174,23 +217,50 @@ async function refreshMarket(id: MarketId) {
       if (prices.length === 50) sma[id] = { at: Date.now(), value: sum(prices) / 50 };
     } catch { /* informational only */ }
   }
-  const planned = planEntry(market, chain, config.markets[id]);
-  snaps[id] = { spot: chain.spot, sma50: sma[id]?.value, ...('plan' in planned ? { plan: planned.plan } : { skip: planned.skip }) };
+  const planned = planDailySpread(market, chain, config.markets[id]);
+  let size: Sizing | undefined;
+  if ('plan' in planned) {
+    const spec = (await specsFor(id)).get(planned.plan.shortName);
+    const account = accountValueUsd();
+    if (spec && Number.isFinite(account)) {
+      const riskUsd = (account * config.riskPerTradePct) / 100;
+      size = { amount: sizeFor(planned.plan, riskUsd, spec), riskUsd, minAmount: spec.minAmount };
+    }
+  }
+  snaps[id] = { spot: chain.spot, sma50: sma[id]?.value, size, ...('plan' in planned ? { plan: planned.plan } : { skip: planned.skip }) };
   return planned;
 }
 
-function startEntry(id: MarketId, plan: Plan, how: 'scheduled' | 'manual'): string {
+async function startEntry(id: MarketId, plan: Plan, how: 'scheduled' | 'manual'): Promise<string> {
   if (!broker) return problems[0] ?? 'trading is unavailable';
   if (workingJobs().some((j) => j.market === id && j.kind === 'entry')) return `a ${id} entry is already working`;
   if (activeSpreads().length >= config.maxOpenSpreads) return `the limit of ${config.maxOpenSpreads} open spreads is reached`;
   if (activeSpreads().some((s) => s.market === id && s.expiry === plan.expiry)) return `a ${id} spread expiring ${plan.expiry} is already open`;
-  const s = config.markets[id];
-  const { spread, job } = openEntry(MARKETS[id], plan, s, Date.now());
+  const account = accountValueUsd();
+  if (!(account > 0)) return 'the account value is not known yet';
+  const spec = (await specsFor(id)).get(plan.shortName);
+  if (!spec) return `no order-size details for ${plan.shortName}`;
+
+  // One trade, one risk: the pair together may lose at most this much.
+  const riskUsd = (account * config.riskPerTradePct) / 100;
+  const amount = sizeFor(plan, riskUsd, spec);
+  if (!amount) return `even the smallest order (${spec.minAmount} ${id}) would risk more than $${riskUsd.toFixed(2)}`;
+
+  // Standard margin locks collateral for the short put as if it stood alone, far above
+  // what the spread can lose. The size stays at the full risk; if the exchange will
+  // not lock enough collateral for it, skip the trade rather than change the risk.
+  const free = accounts.find((a) => a.currency === M[id].currency)?.availableFunds ?? 0;
+  const margin = await broker.margins(plan.shortName, amount, plan.shortMid);
+  if (margin.sell > free) {
+    return `not enough margin: Deribit wants $${Math.round(margin.sell).toLocaleString('en-US')} of collateral for ${amount} ${id} of short puts and $${Math.round(free).toLocaleString('en-US')} is free (standard margin counts the short put alone; portfolio margin would count the spread as one position)`;
+  }
+
+  const { spread, job } = openEntry(M[id], plan, amount, riskUsd, account, Date.now());
   state.spreads.push(spread);
   state.jobs.push(job);
-  state.lastEntryWeek[id] = weekKey();
+  state.lastEntryDay[id] = dayKey();
   save();
-  log(`${id}: ${how} entry started. Limit-buy ${s.amount} ${plan.longName} at the mid first, then limit-sell ${plan.shortName}, never below the ${s.maxLossToCredit}:1 price`);
+  log(`${id}: ${how} entry started, ${amount} ${id} risking at most $${riskUsd.toFixed(2)} (${config.riskPerTradePct}% of $${account.toFixed(2)}). Limit-buy ${plan.longName} at the mid first, then limit-sell ${plan.shortName}`);
   return 'started';
 }
 
@@ -206,7 +276,7 @@ async function advanceJobs() {
         // Nothing traded: drop the empty record, and let a scheduled entry try again in 30 minutes.
         state.spreads = state.spreads.filter((s) => s !== spread);
         if (job.kind === 'entry') {
-          delete state.lastEntryWeek[job.market];
+          delete state.lastEntryDay[job.market];
           retryAt[job.market] = Date.now() + 30 * 60_000;
         }
       }
@@ -225,11 +295,11 @@ async function advanceJobs() {
 
 async function refreshMarkets() {
   for (const id of IDS) {
-    const market = MARKETS[id];
+    const market = M[id];
     try {
       const planned = await refreshMarket(id);
 
-      const expired = state.spreads.filter((x) => x.market === id && (x.status === 'open' || x.status === 'long-only') && Date.now() > x.expiryMs + 15 * 60_000);
+      const expired = state.spreads.filter((x) => x.market === id && (x.status === 'open' || x.status === 'long-only') && Date.now() > x.expiryMs + 10 * 60_000);
       if (expired.length) {
         const prices = await getRecentDeliveryPrices(market.indexName, 10, base);
         for (const sp of expired) {
@@ -241,31 +311,17 @@ async function refreshMarkets() {
         }
       }
 
-      if (broker && state.tradingOn[id] && inEntryWindow() && state.lastEntryWeek[id] !== weekKey() && Date.now() >= (retryAt[id] ?? 0)) {
-        if ('plan' in planned) startEntry(id, planned.plan, 'scheduled');
-        else if (lastSkip[id] !== planned.skip) {
-          lastSkip[id] = planned.skip;
-          log(`${id}: entry window open but no trade: ${planned.skip}`);
+      if (broker && state.tradingOn[id] && inEntryWindow() && state.lastEntryDay[id] !== dayKey() && Date.now() >= (retryAt[id] ?? 0)) {
+        const outcome = 'plan' in planned ? await startEntry(id, planned.plan, 'scheduled') : planned.skip;
+        if (outcome !== 'started' && lastSkip[id] !== outcome) {
+          lastSkip[id] = outcome;
+          log(`${id}: entry window open but no trade: ${outcome}`, 'warn');
         }
       }
     } catch (e) {
       snaps[id] = { ...snaps[id], error: (e as Error).message };
     }
   }
-}
-
-/** Realised P&L of finished deals plus unrealised P&L of open ones; NaN if an open spread cannot be valued. */
-function strategyPnlUsd(): number {
-  let total = 0;
-  for (const sp of state.spreads) {
-    if (sp.status === 'closed' || sp.status === 'settled') total += sp.pnlUsd ?? 0;
-    else if (LIVE.has(sp.status)) {
-      const live = viewSpread(MARKETS[sp.market], sp, chains[sp.market], config.alertDistancePct).live;
-      if (!live) return NaN;
-      total += live.unrealizedUsd;
-    }
-  }
-  return total;
 }
 
 function reconcile() {
@@ -305,9 +361,7 @@ async function refreshAccount() {
   if (!broker) return;
   try {
     accounts = (await broker.accounts()).filter((a) => a.equity !== 0);
-    const next: PositionView[] = [];
-    for (const currency of ['BTC', 'ETH', 'USDC']) next.push(...(await broker.positions(currency)));
-    positions = next;
+    positions = await broker.positions('USDC');
     if (accountError) log('Deribit account readable again');
     accountError = '';
   } catch (e) {
@@ -323,15 +377,15 @@ async function refreshAccount() {
     if (price === undefined) missing.push(a.currency);
     else total += a.equity * price;
   }
-  equityUsd = total;
+  exchangeEquityUsd = missing.some((c) => c in PRICE_USD) ? NaN : total;
   unpriced = missing;
   reconcile();
 
-  // Sample only when every coin the account holds could be priced, so the curve never dips on a missing price.
+  const value = accountValueUsd();
   const strategy = strategyPnlUsd();
   const now = Date.now();
-  if (!missing.some((c) => c in PRICE_USD) && Number.isFinite(strategy) && now - lastSampleAt >= config.sampleSeconds * 1000) {
-    const sample = { t: now, equityUsd: total, strategyUsd: strategy };
+  if (Number.isFinite(value) && Number.isFinite(strategy) && now - lastSampleAt >= config.sampleSeconds * 1000) {
+    const sample = { t: now, equityUsd: value, strategyUsd: strategy };
     samples.push(sample);
     appendSample(equityFile, sample);
     lastSampleAt = now;
@@ -349,8 +403,10 @@ async function tick() {
 }
 
 function view() {
-  const spreads = state.spreads.map((sp) => viewSpread(MARKETS[sp.market], sp, chains[sp.market], config.alertDistancePct));
+  const spreads = state.spreads.map((sp) => viewSpread(M[sp.market], sp, chains[sp.market], config.alertDistancePct));
   const live = spreads.filter((s) => s.live);
+  const value = accountValueUsd();
+  const usdc = accounts.find((a) => a.currency === 'USDC');
   return {
     mode,
     canTrade: Boolean(broker),
@@ -360,7 +416,15 @@ function view() {
     entry: { ...config.entry, inWindow: inEntryWindow(), next: nextWindow() },
     maxOpenSpreads: config.maxOpenSpreads,
     execution: config.execution,
-    account: { equityUsd, currencies: accounts, unpriced },
+    account: {
+      valueUsd: value,
+      capitalUsd: config.capitalUsd,
+      riskPerTradePct: config.riskPerTradePct,
+      riskUsd: (value * config.riskPerTradePct) / 100,
+      exchange: usdc ?? null,
+      exchangeEquityUsd,
+      unpriced,
+    },
     totals: { unrealizedUsd: sum(live.map((s) => s.live!.unrealizedUsd)), openRiskUsd: sum(live.map((s) => s.amount * s.maxLossUsd)), open: live.length },
     metrics: { deals: dealStats(state.spreads), equity: equityStats(samples) },
     series: downsample(samples, 600),
@@ -369,7 +433,7 @@ function view() {
       id,
       tradingOn: state.tradingOn[id],
       settings: config.markets[id],
-      enteredThisWeek: state.lastEntryWeek[id] === weekKey(),
+      enteredToday: state.lastEntryDay[id] === dayKey(),
       working: workingJobs().some((j) => j.market === id && j.kind === 'entry'),
       ...snaps[id],
     })),
@@ -384,13 +448,7 @@ function view() {
         step: leg?.step,
         says: leg?.says,
         instrument: leg && sp ? (leg.leg === 'long' ? sp.longName : sp.shortName) : '',
-        order: j.order ? {
-          side: j.order.side,
-          price: j.order.price,
-          priceUsd: toUsd(MARKETS[j.market], j.order.price, chains[j.market]?.spot ?? 0),
-          amount: j.order.amount,
-          filled: j.order.filled,
-        } : null,
+        order: j.order ? { side: j.order.side, price: j.order.price, amount: j.order.amount, filled: j.order.filled } : null,
         deadlineAt: j.phaseStartedAt + phaseLimitMs(j, config.execution),
         error: jobErrors.get(j.id),
       };
@@ -448,18 +506,19 @@ const server = createServer(async (req, res) => {
     const body = await readBody(req);
     const id = body.market as MarketId;
 
-    if (url.pathname === '/api/trading' && MARKETS[id]) {
+    if (url.pathname === '/api/trading' && M[id]) {
       state.tradingOn[id] = Boolean(body.on);
       save();
       log(`${id}: trading switched ${body.on ? 'ON' : 'OFF'} on the dashboard`);
       return reply(res, 200, { result: 'ok' });
     }
-    if (url.pathname === '/api/enter' && MARKETS[id]) {
+    if (url.pathname === '/api/enter' && M[id]) {
       if (!broker) return reply(res, 400, { error: problems[0] ?? 'trading is unavailable' });
       const planned = await refreshMarket(id);
       if (!('plan' in planned)) return reply(res, 200, { result: planned.skip });
-      const result = startEntry(id, planned.plan, 'manual');
+      const result = await startEntry(id, planned.plan, 'manual');
       if (result === 'started') await advanceJobs();
+      else log(`${id}: manual entry not started: ${result}`, 'warn');
       return reply(res, 200, { result });
     }
     if (url.pathname === '/api/close') {

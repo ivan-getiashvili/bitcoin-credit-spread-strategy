@@ -4,19 +4,21 @@
   "pollSeconds": 10,
   "chainSeconds": 30,
   "sampleSeconds": 60,
-  "maxOpenSpreads": 4,
-  "alertDistancePct": 3,
-  "entry": { "weekdayUtc": 5, "fromUtc": "08:05", "toUtc": "11:00" },
+  "capitalUsd": 100000,
+  "riskPerTradePct": 2,
+  "maxOpenSpreads": 3,
+  "alertDistancePct": 0.5,
+  "entry": { "fromUtc": "08:05", "toUtc": "10:00" },
   "execution": {
-    "repriceSeconds": 30,
+    "repriceSeconds": 20,
     "maxConcessionPct": 0,
-    "buyLongMinutes": 30,
-    "sellShortMinutes": 120,
-    "exitLegMinutes": 60
+    "buyLongMinutes": 20,
+    "sellShortMinutes": 60,
+    "exitLegMinutes": 30
   },
   "markets": {
-    "BTC": { "dte": 28, "widthPct": 0.06, "maxLossToCredit": 2, "amount": 0.1 },
-    "ETH": { "dte": 28, "widthPct": 0.06, "maxLossToCredit": 2, "amount": 1 },
-    "SOL": { "dte": 28, "widthPct": 0.06, "maxLossToCredit": 2, "amount": 10 }
+    "BTC": { "enabled": true, "minHoursToExpiry": 12 },
+    "ETH": { "enabled": false, "minHoursToExpiry": 12 },
+    "SOL": { "enabled": true, "minHoursToExpiry": 12 }
   }
 }

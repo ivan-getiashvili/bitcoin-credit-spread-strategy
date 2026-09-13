@@ -3,12 +3,15 @@ import { test } from 'node:test';
 import type { SpreadRecord } from '../lib/executor.ts';
 import { dealStats, downsample, equityStats, type EquitySample } from '../lib/metrics.ts';
 
+const close = (a: number, b: number) => Math.abs(a - b) < 1e-9;
+
 const deal = (pnlUsd: number, i: number) => ({
   status: i % 2 ? 'closed' : 'settled',
   pnlUsd,
   openedAmount: 1,
   maxLossUsd: 200,
   lossToCredit: 1.9,
+  accountUsdAtEntry: 100_000,
   closedAt: `2026-09-${String(10 + i).padStart(2, '0')}T08:00:00Z`,
 }) as unknown as SpreadRecord;
 
@@ -26,11 +29,20 @@ test('deal statistics count only finished deals', () => {
   assert.equal(d.avgLossUsd, 65);
   assert.equal(d.realizedRiskToReward, 65 / 60);
   assert.equal(d.expectancyUsd, 10);
-  assert.ok(Math.abs(d.avgR - 0.05) < 1e-12);
+  assert.ok(close(d.avgR, 0.05));
   assert.equal(d.largestWinUsd, 100);
   assert.equal(d.largestLossUsd, -120);
   assert.equal(d.maxConsecutiveLosses, 1);
   assert.equal(d.plannedRiskToReward, 1.9);
+});
+
+test('percent per deal is measured against the account value at entry', () => {
+  const d = dealStats([100, 50, -120, 30, -10].map(deal));
+  assert.ok(close(d.avgGainPct, 0.01), `avg ${d.avgGainPct}`);
+  assert.ok(close(d.avgWinPct, 0.06), `win ${d.avgWinPct}`);
+  assert.ok(close(d.avgLossPct, -0.065), `loss ${d.avgLossPct}`);
+  assert.ok(close(d.bestDealPct, 0.1));
+  assert.ok(close(d.worstDealPct, -0.12));
 });
 
 test('ratios use strategy P&L, so a swinging coin price does not count as strategy risk', () => {
@@ -39,7 +51,6 @@ test('ratios use strategy P&L, so a swinging coin price does not count as strate
   let strategy = 0;
   for (let day = 0; day <= steps.length; day++) {
     if (day > 0) strategy += steps[day - 1];
-    // Account equity jumps around with the coin; the strategy line only moves by its own P&L.
     samples.push({ t: Date.UTC(2026, 8, 1 + day, 23), equityUsd: 10_000 * (1 + 0.05 * Math.sin(day)), strategyUsd: strategy });
   }
   const e = equityStats(samples);

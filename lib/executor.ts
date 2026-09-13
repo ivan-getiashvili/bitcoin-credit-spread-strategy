@@ -1,44 +1,47 @@
 /**
- * Opening, closing and settling spreads with limit orders only, under Ivan's rules.
+ * Ivan's daily put spread, traded with limit orders only.
  *
- *   1. Every order is a post-only LIMIT order at the mid (or, if Ivan allows it, a
- *      set share of the way toward the other side). It rests on the book and never
- *      crosses the spread.
- *   2. Entry buys the long put FIRST. The short put is offered only after the long
- *      has filled, and only for as many as were bought, so the account is never
- *      short an uncovered put.
- *   3. The short put is never offered below the price at which max loss would
- *      exceed `maxLossToCredit` times the credit, given what the long really cost.
- *   4. Each leg has a time limit. A long that does not fill is cancelled and nothing
- *      is held; a short that does not fill leaves only the long put, which can lose
- *      no more than was paid for it.
+ * Strategy: at the start of each Deribit options day (just after the 08:00 UTC
+ * settlement), on each coin that is switched on,
+ *   1. buy the put at the SECOND strike below the price,
+ *   2. then sell the put at the FIRST strike below the price,
+ * on the nearest expiry at least `minHoursToExpiry` away (normally the next day's),
+ * sized so the whole spread can lose at most a set share of the account.
  *
- * Closing reverses the order: buy the short back first, then sell the long.
+ * Execution rules:
+ *   - Every order is a post-only LIMIT order at the mid (or a set share toward the
+ *     other side, if Ivan allows it). Nothing crosses the spread.
+ *   - The long put is bought first; the short is offered only for as many as were
+ *     bought, so the account is never short an uncovered put.
+ *   - The short is never offered below the price at which the spread's max loss
+ *     would exceed its risk budget, given what the long actually cost.
+ *   - Each leg has a time limit. A long that does not fill is cancelled and nothing
+ *     is held; a short that does not fill leaves only the long put.
+ *   - Closing reverses the order: buy the short back first, then sell the long.
  *
- * The work is a resumable job, advanced a step at a time by the bot's loop and
- * saved after every step, so a restart picks up the same orders on the exchange.
- * P&L is kept as cash — premiums received minus premiums paid minus fees, in the
- * option's own currency — which is exact for inverse and linear books alike.
+ * The work is a resumable job saved after every step, so a restart picks up the
+ * same exchange orders. P&L is kept as cash in the option's quote currency, which
+ * for Deribit's USDC options is simply dollars.
  */
 import { bs } from './blackscholes.ts';
 import type { Broker, OrderView, Side } from './broker.ts';
 import { toTick, type Book, type InstrumentSpec, type Option } from './deribit.ts';
 import type { Market, MarketId } from './markets.ts';
-import { FEES, pickSpread, type SpreadRule } from './spread.ts';
+import { FEES } from './spread.ts';
 
-const DAY = 86_400_000;
+const HOUR = 3_600_000;
 const EPS = 1e-9;
 const r8 = (x: number) => Math.round(x * 1e8) / 1e8;
 
-export type MarketSettings = SpreadRule & {
-  /** Target days to expiry. */
-  dte: number;
-  /** Size of each spread in units of the underlying (Deribit minimums: BTC 0.1, ETH 1, SOL 10). */
-  amount: number;
+export type MarketSettings = {
+  /** Trade this coin unless it is switched off on the dashboard. */
+  enabled: boolean;
+  /** Skip expiries closer than this. At the 08:05 UTC entry the next daily is ~24 hours away. */
+  minHoursToExpiry: number;
 };
 
 export type ExecSettings = {
-  /** How often a resting order is moved to follow the market, seconds. */
+  /** How often a resting order is moved to follow the mid, seconds. */
   repriceSeconds: number;
   /** How far past the mid toward the other side an order may go, as % of the half-spread. 0 keeps it at the mid. */
   maxConcessionPct: number;
@@ -54,18 +57,21 @@ export type Plan = {
   market: MarketId;
   expiry: string;
   expiryMs: number;
+  hoursToExpiry: number;
   spot: number;
   shortName: string;
   shortStrike: number;
-  shortIv: number;
+  /** Mid price, quote currency. */
+  shortMid: number;
   longName: string;
   longStrike: number;
-  /** Per unit, dollars, at mid prices after fees. */
+  longMid: number;
+  /** Per unit of underlying, dollars, at mid prices after fees. */
   creditUsd: number;
   maxLossUsd: number;
   lossToCredit: number;
+  /** How far below the price the sold put sits, percent. */
   distancePct: number;
-  shortDelta: number;
   /** The market's own odds of finishing above breakeven. */
   marketWinPct: number;
 };
@@ -85,6 +91,12 @@ export type SpreadRecord = {
   longName: string;
   longStrike: number;
   plannedAmount: number;
+  /** The most the whole spread may lose, dollars, set from the account value at entry. */
+  riskUsd: number;
+  /** Account value when the entry started, dollars. */
+  accountUsdAtEntry: number;
+  /** Smallest credit per unit, quote currency, that keeps the spread's max loss within `riskUsd`. */
+  minCreditQuote: number;
   /** Open short puts, each covered by a long put. */
   amount: number;
   /** Long puts held beyond the open shorts: not yet sold against, or freed by a buy-back. */
@@ -127,11 +139,10 @@ export type Job = {
 export type JobContext = {
   broker: Broker;
   market: Market;
-  settings: MarketSettings;
   exec: ExecSettings;
   book: (name: string) => Promise<Book>;
   spec: (name: string) => InstrumentSpec | undefined;
-  /** Latest spot index for the market, USD. */
+  /** Latest spot index for the market, dollars. */
   index: () => number;
   now: () => number;
   save: () => void;
@@ -143,71 +154,67 @@ export const toUsd = (m: Market, quote: number, index: number) => (inverse(m) ? 
 /** Fee per unit in the quote currency: 0.03% of the underlying, capped at 12.5% of the price. Maker and taker alike. */
 export const feeQuote = (m: Market, price: number, index: number) =>
   Math.min(inverse(m) ? FEES.taker : FEES.taker * index, FEES.capShare * price);
-const feeCap = (m: Market, index: number) => (inverse(m) ? FEES.taker : FEES.taker * index);
-
-/** Smallest credit per unit, in the quote currency, that keeps max loss within `cap` times the credit. */
-export function minCreditQuote(m: Market, width: number, longStrike: number, cap: number, index: number): number {
-  // Inverse: max loss = width - credit x longStrike, credit worth credit x index in dollars.
-  return inverse(m) ? width / (cap * index + longStrike) : width / (cap + 1);
-}
-
 const midOf = (bid: number | null | undefined, ask: number | null | undefined, mark: number) =>
   bid && ask && bid > 0 && ask > 0 ? (bid + ask) / 2 : mark;
-const pct = (x: number) => `${+(x * 100).toFixed(1)}%`;
 const px = (x: number) => `${+x.toFixed(6)}`;
 
-/** The spread the rule would pick right now from a chain, priced at mids, or why there is none. */
-export function planEntry(market: Market, chain: { options: Option[]; spot: number }, s: MarketSettings, now = Date.now()): { plan: Plan } | { skip: string } {
+/** Today's spread: buy the put at the second strike below the price, sell the put at the first. */
+export function planDailySpread(market: Market, chain: { options: Option[]; spot: number }, s: MarketSettings, now = Date.now()): { plan: Plan } | { skip: string } {
   const spot = chain.spot;
-  const puts = chain.options.filter((o) => o.type === 'put' && o.openInterest > 0 && o.markIv && o.mark > 0);
-  const tolerance = Math.max(3, s.dte * 0.25);
-  const daysTo = (e: number) => (e - now) / DAY;
-  const expiryMs = [...new Set(puts.map((o) => o.expiryMs))]
-    .filter((e) => daysTo(e) >= 2 && Math.abs(daysTo(e) - s.dte) <= tolerance)
-    .sort((a, b) => Math.abs(daysTo(a) - s.dte) - Math.abs(daysTo(b) - s.dte))[0];
-  if (!expiryMs) {
-    // Deribit lists each new weekly expiry on a Friday, so outside Fridays the
-    // ~4-week slot is often empty; every Friday window in the backtest had one for BTC and ETH.
-    return { skip: `no expiry ${Math.round(s.dte - tolerance)}–${Math.round(s.dte + tolerance)} days out right now; Friday's new listings usually add one` };
-  }
+  const puts = chain.options.filter((o) => o.type === 'put' && o.mark > 0);
+  const hours = (e: number) => (e - now) / HOUR;
+  const expiryMs = [...new Set(puts.map((o) => o.expiryMs))].filter((e) => hours(e) >= s.minHoursToExpiry).sort((a, b) => a - b)[0];
+  if (!expiryMs) return { skip: `no expiry at least ${s.minHoursToExpiry} hours away` };
 
-  const legs = puts.filter((o) => o.expiryMs === expiryMs);
-  // Limit orders rest at the mid, so the plan is priced there.
-  const quotes = legs.map((o) => {
-    const mid = toUsd(market, midOf(o.bid, o.ask, o.mark), spot);
-    return { strike: o.strike, bid: mid, ask: mid, mid, iv: o.markIv! / 100 };
-  });
-  const pick = pickSpread(quotes, spot, market, s);
-  if (!pick) return { skip: `no ${pct(s.widthPct)}-wide spread pays enough at mid prices to keep max loss within ${s.maxLossToCredit}× the credit` };
+  const below = puts.filter((o) => o.expiryMs === expiryMs && o.strike < spot).sort((a, b) => b.strike - a.strike);
+  const [short, long] = below;
+  if (!short || !long) return { skip: 'fewer than two strikes below the price on this expiry' };
 
-  const shortLeg = legs.find((o) => o.strike === pick.short.strike)!;
-  const longLeg = legs.find((o) => o.strike === pick.long.strike)!;
-  const t = daysTo(expiryMs) / 365;
-  const g = bs(spot, pick.short.strike, t, pick.short.iv, 'put');
-  const be = bs(spot, pick.short.strike - pick.creditUsd, t, pick.short.iv, 'put');
+  const shortMid = midOf(short.bid, short.ask, short.mark);
+  const longMid = midOf(long.bid, long.ask, long.mark);
+  const credit = shortMid - longMid - feeQuote(market, shortMid, spot) - feeQuote(market, longMid, spot);
+  const width = short.strike - long.strike;
+  const creditUsd = toUsd(market, credit, spot);
+  const maxLossUsd = inverse(market) ? width - credit * long.strike : width - credit;
+  if (!(creditUsd > 0)) return { skip: `the ${short.strike}/${long.strike} spread pays nothing after fees at mid prices` };
+
+  const t = hours(expiryMs) / (24 * 365);
+  const be = short.markIv ? bs(spot, short.strike - creditUsd, t, short.markIv / 100, 'put') : null;
   return {
     plan: {
       market: market.id,
-      expiry: shortLeg.expiry,
+      expiry: short.expiry,
       expiryMs,
+      hoursToExpiry: hours(expiryMs),
       spot,
-      shortName: shortLeg.name,
-      shortStrike: shortLeg.strike,
-      shortIv: pick.short.iv,
-      longName: longLeg.name,
-      longStrike: longLeg.strike,
-      creditUsd: pick.creditUsd,
-      maxLossUsd: pick.maxLossUsd,
-      lossToCredit: pick.maxLossUsd / pick.creditUsd,
-      distancePct: (1 - shortLeg.strike / spot) * 100,
-      shortDelta: g ? -g.putDelta : NaN,
+      shortName: short.name,
+      shortStrike: short.strike,
+      shortMid,
+      longName: long.name,
+      longStrike: long.strike,
+      longMid,
+      creditUsd,
+      maxLossUsd,
+      lossToCredit: maxLossUsd / creditUsd,
+      distancePct: (1 - short.strike / spot) * 100,
       marketWinPct: be ? (1 - be.probItm) * 100 : NaN,
     },
   };
 }
 
-export function openEntry(market: Market, plan: Plan, s: MarketSettings, now: number): { spread: SpreadRecord; job: Job } {
+/** Units of underlying that keep the whole spread's max loss within `riskUsd`, on the order-size grid. 0 if none. */
+export function sizeFor(plan: Plan, riskUsd: number, spec: InstrumentSpec): number {
+  const step = spec.minAmount;
+  const units = Math.floor(riskUsd / plan.maxLossUsd / step + 1e-9) * step;
+  return units >= step ? r8(units) : 0;
+}
+
+export function openEntry(market: Market, plan: Plan, amount: number, riskUsd: number, accountUsd: number, now: number): { spread: SpreadRecord; job: Job } {
   const id = `${market.id}-${plan.expiry}-${now.toString(36)}`;
+  const width = plan.shortStrike - plan.longStrike;
+  const budgetPerUnit = riskUsd / amount;
+  // Inverse: max loss = width - credit x longStrike. Linear: width - credit.
+  const minCreditQuote = Math.max(0, inverse(market) ? (width - budgetPerUnit) / plan.longStrike : width - budgetPerUnit);
   const spread: SpreadRecord = {
     id,
     market: market.id,
@@ -219,7 +226,10 @@ export function openEntry(market: Market, plan: Plan, s: MarketSettings, now: nu
     shortStrike: plan.shortStrike,
     longName: plan.longName,
     longStrike: plan.longStrike,
-    plannedAmount: s.amount,
+    plannedAmount: amount,
+    riskUsd,
+    accountUsdAtEntry: accountUsd,
+    minCreditQuote,
     amount: 0,
     spareLong: 0,
     openedAmount: 0,
@@ -284,9 +294,10 @@ function avgFill(spread: SpreadRecord, side: Side, instrument: string): number {
 
 const isFinished = (o: OrderView) => o.state !== 'open' || o.filled >= o.amount - EPS;
 
-/** The limit price for this phase right now, or null if no price satisfies the rule. */
+/** The limit price for this phase right now, or null if no price keeps the spread within its risk budget. */
 async function targetPrice(job: Job, spread: SpreadRecord, ctx: JobContext): Promise<number | null> {
   if (job.phase === 'done') return null;
+  const m = ctx.market;
   const name = instrumentOf(job, spread);
   const spec = ctx.spec(name);
   if (!spec) throw new Error(`no tick size known for ${name}`);
@@ -300,19 +311,19 @@ async function targetPrice(job: Job, spread: SpreadRecord, ctx: JobContext): Pro
   const buying = LEG[job.phase].side === 'buy';
   const give = Math.min(Math.max(ctx.exec.maxConcessionPct, 0), 100) / 100;
   let price = buying ? mid + give * Math.max((ask ?? mid) - mid, 0) : mid - give * Math.max(mid - (bid ?? mid), 0);
-  const width = spread.shortStrike - spread.longStrike;
-  const minCredit = minCreditQuote(ctx.market, width, spread.longStrike, ctx.settings.maxLossToCredit, index);
 
   if (job.phase === 'buy-long') {
     // Pay at most what still leaves the minimum credit if the short sells at its mid.
     const s = await ctx.book(spread.shortName);
-    const longMax = midOf(s.bids[0]?.[0], s.asks[0]?.[0], s.mark) - 2 * feeCap(ctx.market, index) - minCredit;
-    if (longMax < mid) return null;
+    const shortMid = midOf(s.bids[0]?.[0], s.asks[0]?.[0], s.mark);
+    const longMax = shortMid - feeQuote(m, shortMid, index) - feeQuote(m, mid, index) - spread.minCreditQuote;
+    if (longMax < toTick(mid, spec, 'down') - EPS) return null;
     price = Math.min(price, longMax);
   }
   if (job.phase === 'sell-short') {
-    // Never below the price that keeps max loss within the cap, given the long's real cost.
-    const floor = avgFill(spread, 'buy', spread.longName) + 2 * feeCap(ctx.market, index) + minCredit;
+    // Never below the price that keeps max loss within the budget, given the long's real cost.
+    const longCost = avgFill(spread, 'buy', spread.longName);
+    const floor = longCost + feeQuote(m, longCost, index) + feeQuote(m, Math.max(price, longCost), index) + spread.minCreditQuote;
     price = Math.max(price, floor);
   }
   const ticked = toTick(price, spec, buying ? 'down' : 'up');
@@ -369,7 +380,7 @@ function complete(job: Job, spread: SpreadRecord, ctx: JobContext, why: string):
       spread.note = spread.spareLong > EPS
         ? `Short put filled ${spread.amount} of ${r8(spread.amount + spread.spareLong)}; ${spread.spareLong} long puts are held without a short.`
         : undefined;
-      ctx.log(`${m}: spread open, ${spread.amount} × ${spread.shortStrike}/${spread.longStrike}, credit $${(spread.creditUsd * spread.amount).toFixed(2)}, max loss $${(spread.maxLossUsd * spread.amount).toFixed(2)} (${spread.lossToCredit.toFixed(2)}×)`);
+      ctx.log(`${m}: spread open, ${spread.amount} × ${spread.shortStrike}/${spread.longStrike}, credit $${(spread.creditUsd * spread.amount).toFixed(2)}, max loss $${(spread.maxLossUsd * spread.amount).toFixed(2)} of a $${spread.riskUsd.toFixed(2)} budget`);
     } else if (spread.spareLong > EPS) {
       spread.status = 'long-only';
       spread.note = `Short put not sold (${why}). Holding ${spread.spareLong} long puts only, with no short exposure.`;
@@ -412,6 +423,7 @@ async function step(job: Job, spread: SpreadRecord, ctx: JobContext): Promise<vo
   if (job.phase === 'done') return;
   const now = ctx.now();
   const limitMs = phaseLimitMs(job, ctx.exec);
+  const budget = `the $${spread.riskUsd.toFixed(2)} risk budget`;
 
   if (job.order) {
     let o = await ctx.broker.orderState(job.order.orderId);
@@ -433,7 +445,7 @@ async function step(job: Job, spread: SpreadRecord, ctx: JobContext): Promise<vo
         o = await ctx.broker.cancelOrder(o.orderId);
         applyFill(job, spread, o, ctx);
         job.order = undefined;
-        return finishPhase(job, spread, ctx, `the ${ctx.settings.maxLossToCredit}:1 rule is no longer met at mid prices`);
+        return finishPhase(job, spread, ctx, `${budget} can no longer be met at mid prices`);
       }
       if (Math.abs(price - o.price) > EPS) {
         o = await ctx.broker.editOrder(o, price);
@@ -469,7 +481,7 @@ async function step(job: Job, spread: SpreadRecord, ctx: JobContext): Promise<vo
 
   if (now - job.phaseStartedAt >= limitMs) return finishPhase(job, spread, ctx, `not filled within ${Math.round(limitMs / 60_000)} minutes`);
   const price = await targetPrice(job, spread, ctx);
-  if (price === null) return finishPhase(job, spread, ctx, `no price meets the ${ctx.settings.maxLossToCredit}:1 rule at mid prices`);
+  if (price === null) return finishPhase(job, spread, ctx, `no price keeps the spread within ${budget} at mid prices`);
 
   const leg = LEG[job.phase];
   job.seq += 1;

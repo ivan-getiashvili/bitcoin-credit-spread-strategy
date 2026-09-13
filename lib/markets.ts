@@ -26,6 +26,18 @@ export const MARKETS: Record<MarketId, Market> = {
   SOL: { id: 'SOL', currency: 'USDC', prefix: 'SOL_USDC', settlement: 'linear', indexName: 'sol_usdc' },
 };
 
+/**
+ * The dollar-settled books the bot trades. Deribit lists no USDT-settled options;
+ * its dollar options settle in USDC, priced per coin of underlying, so premiums,
+ * risk and P&L are all plain dollar figures. (The inverse `MARKETS` above are
+ * what the historical backtest was run on.)
+ */
+export const DOLLAR_MARKETS: Record<MarketId, Market> = {
+  BTC: { id: 'BTC', currency: 'USDC', prefix: 'BTC_USDC', settlement: 'linear', indexName: 'btc_usdc' },
+  ETH: { id: 'ETH', currency: 'USDC', prefix: 'ETH_USDC', settlement: 'linear', indexName: 'eth_usdc' },
+  SOL: { id: 'SOL', currency: 'USDC', prefix: 'SOL_USDC', settlement: 'linear', indexName: 'sol_usdc' },
+};
+
 export type ParsedName = { expiry: string; expiryMs: number; strike: number; type: 'call' | 'put' };
 
 const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];

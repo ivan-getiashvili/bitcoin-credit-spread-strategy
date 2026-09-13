@@ -11,6 +11,7 @@ dist/
 data/*.json
 data/*.jsonl
 data/*.tmp
+data/*.lock
 data/history/
 !data/.gitkeep
 

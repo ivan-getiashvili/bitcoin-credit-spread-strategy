@@ -27,12 +27,12 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-  .tab { font-variant-numeric: tabular-nums; }
   .muted { color: var(--muted); }
   .soft { color: var(--ink-2); }
   .small { font-size: 12px; }
   .pos { color: var(--good); }
   .neg { color: var(--bad); }
+  .warn-text { color: var(--warn); }
 
   header { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px;
     padding: 12px 24px; background: var(--surface); border-bottom: 1px solid var(--border); }
@@ -140,7 +140,7 @@
   <section class="panel" aria-label="Performance">
     <div class="perf-head">
       <div>
-        <div class="label">Account equity</div>
+        <div id="heroLabel" class="label">Account value</div>
         <div id="hero" class="hero">–</div>
         <div id="heroSub" class="sub"></div>
       </div>
@@ -155,7 +155,7 @@
         <div id="realisedSub" class="sub"></div>
       </div>
       <div class="seg" role="group" aria-label="Curve">
-        <button type="button" data-series="equity" aria-pressed="true">Account equity</button>
+        <button type="button" data-series="equity" aria-pressed="true">Account value</button>
         <button type="button" data-series="strategy" aria-pressed="false">Strategy P&amp;L</button>
       </div>
     </div>
@@ -176,7 +176,7 @@
   </section>
 
   <section class="panel">
-    <h2>Positions on Deribit <span class="muted">as the exchange reports them</span></h2>
+    <h2>Positions on Deribit <span class="muted">as the exchange reports them, in USDC</span></h2>
     <div id="positions" class="scroll"></div>
   </section>
 
@@ -199,6 +199,7 @@
   const num = (x, d = 0) => (fin(x) ? x.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }) : '–');
   const money = (x, d = 2) => (fin(x) ? `${x < 0 ? '−' : ''}$${num(Math.abs(x), d)}` : '–');
   const signed = (x, d = 2) => (fin(x) ? `${x > 0 ? '+' : x < 0 ? '−' : ''}$${num(Math.abs(x), d)}` : '–');
+  const signedPct = (x, d = 2) => (fin(x) ? `${x > 0 ? '+' : x < 0 ? '−' : ''}${num(Math.abs(x), d)}%` : '–');
   const tone = (x) => (fin(x) && x > 0 ? 'pos' : fin(x) && x < 0 ? 'neg' : '');
   const compact = (v) => {
     const a = Math.abs(v);
@@ -207,12 +208,13 @@
     if (a >= 1e4) return `${s}$${+(a / 1e3).toFixed(1)}K`;
     return `${s}$${num(a, a < 100 && a % 1 ? 2 : 0)}`;
   };
-  const expiryDay = (iso) => new Date(`${iso}T08:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
   const when = (t) => new Date(t).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const utc = (t) => `${new Date(t).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' })} UTC`;
+  const expiryDay = (iso) => new Date(`${iso}T08:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
   const strike = (k) => num(k, k % 1 ? 1 : 0);
-  const quote = (m, p) => (m === 'SOL' ? `${num(p, 2)} USDC` : `${+Number(p).toFixed(4)} ${m}`);
   const MODE = { testnet: 'TESTNET · Deribit test account, fake money', live: 'LIVE · real money' };
   const STATE = { safe: 'Safe', watch: 'Near sold put', breached: 'Below sold put' };
+  const MARGIN = { segregated_sm: 'standard margin', cross_sm: 'standard margin, cross', segregated_pm: 'portfolio margin', cross_pm: 'portfolio margin, cross' };
 
   let S = null;
   let received = 0;
@@ -223,9 +225,9 @@
     $('mode').textContent = MODE[S.mode] ?? S.mode;
     $('mode').className = `mode ${S.mode}`;
     const w = S.entry;
-    const at = (iso) => new Date(iso).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
     const until = (iso) => new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
-    $('window').innerHTML = w.inWindow ? `<b>Entry window open</b> until ${until(w.next.to)} UTC` : w.next ? `Next entry window <b>${at(w.next.from)}–${until(w.next.to)} UTC</b>` : '';
+    const from = new Date(w.next.from).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+    $('window').innerHTML = w.inWindow ? `<b>Daily entry window open</b> until ${until(w.next.to)} UTC` : `Next daily entry <b>${from}–${until(w.next.to)} UTC</b>`;
     $('banners').innerHTML = [
       ...S.problems.map((p) => `<div class="banner bad">${esc(p)}</div>`),
       S.accountError ? `<div class="banner bad">${esc(S.accountError)}</div>` : '',
@@ -250,32 +252,35 @@
     const a = S.account;
     const e = S.metrics.equity;
     const d = S.metrics.deals;
-    $('hero').textContent = !S.canTrade ? 'Not connected' : fin(a.equityUsd) ? money(a.equityUsd) : 'Reading…';
-    $('hero').classList.toggle('muted', !S.canTrade || !fin(a.equityUsd));
-    // Only coins the bot can price make up the equity figure; the rest are counted, not listed.
-    const unpriced = new Set(a.unpriced || []);
-    const balances = (a.currencies || [])
-      .filter((c) => !unpriced.has(c.currency))
-      .map((c) => `${num(c.equity, ['BTC', 'ETH'].includes(c.currency) ? 4 : 2)} ${esc(c.currency)}`)
-      .join(' · ');
+    const demo = fin(a.capitalUsd);
+    $('heroLabel').textContent = demo ? 'Account value (demo)' : 'Account equity';
+    $('hero').textContent = !S.canTrade ? 'Not connected' : fin(a.valueUsd) ? money(a.valueUsd) : 'Reading…';
+    $('hero').classList.toggle('muted', !S.canTrade || !fin(a.valueUsd));
+    const ex = a.exchange;
     $('heroSub').innerHTML = !S.canTrade
-      ? 'Connect the test account to see equity'
-      : `${balances || 'no balances yet'}${fin(e.accountChangeUsd) ? ` · <span class="${tone(e.accountChangeUsd)}">${signed(e.accountChangeUsd)}</span> since ${when(e.since)}` : ''}${unpriced.size ? ` · <span title="${esc([...unpriced].join(', '))}">${unpriced.size} other coin${unpriced.size === 1 ? '' : 's'} not counted</span>` : ''}`;
+      ? 'Connect the test account to start'
+      : [
+          demo && fin(a.valueUsd) ? `${money(a.capitalUsd, 0)} starting capital <span class="${tone(a.valueUsd - a.capitalUsd)}">${signed(a.valueUsd - a.capitalUsd)}</span>` : '',
+          fin(a.riskUsd) ? `risk per spread ${num(a.riskPerTradePct, 1)}% = ${money(a.riskUsd)}` : '',
+          ex ? `Deribit balance ${num(ex.equity, 2)} USDC, ${num(ex.availableFunds, 0)} free for margin (${esc(MARGIN[ex.marginModel] ?? ex.marginModel)})` : '',
+        ].filter(Boolean).join(' · ');
     $('unreal').innerHTML = `<span class="${tone(S.totals.unrealizedUsd)}">${signed(S.totals.unrealizedUsd)}</span>`;
     $('unrealSub').textContent = `${S.totals.open} open · ${money(S.totals.openRiskUsd)} at risk`;
     $('realised').innerHTML = `<span class="${tone(d.netPnlUsd)}">${signed(d.netPnlUsd)}</span>`;
     $('realisedSub').textContent = `${d.deals} finished deal${d.deals === 1 ? '' : 's'}`;
 
     drawChart();
-    $('chartNote').textContent = chartKey === 'equity'
-      ? 'Everything in the account, valued in dollars. It also moves with BTC and ETH prices whenever collateral is held in those coins.'
-      : "Only this bot's deals: realised P&L plus unrealised P&L of open spreads, at Deribit's marks. Sharpe, Sortino and drawdown are measured on this line.";
+    $('chartNote').textContent = chartKey === 'strategy'
+      ? "Only this bot's deals: realised P&L plus unrealised P&L of open spreads, at Deribit's marks. Sharpe, Sortino and drawdown are measured on this line."
+      : demo
+        ? `The demo account: ${money(a.capitalUsd, 0)} starting capital plus this bot's realised and unrealised P&L. Risk per spread and every percentage are measured against it, whatever the test exchange balance is.`
+        : 'Everything in the exchange account, valued in dollars.';
 
     const byDay = new Map();
     for (const p of S.series) byDay.set(new Date(p.t).toISOString().slice(0, 10), p);
     const days = [...byDay.entries()];
     $('daily').innerHTML = days.length
-      ? `<table><thead><tr><th>Day (UTC)</th><th class="r">Account equity</th><th class="r">Strategy P&amp;L</th><th class="r">Change that day</th></tr></thead><tbody>${days.map(([k, p], i) => {
+      ? `<table><thead><tr><th>Day (UTC)</th><th class="r">Account value</th><th class="r">Strategy P&amp;L</th><th class="r">Change that day</th></tr></thead><tbody>${days.map(([k, p], i) => {
           const change = i ? p.strategyUsd - days[i - 1][1].strategyUsd : NaN;
           return `<tr><td>${k}</td><td class="r">${money(p.equityUsd)}</td><td class="r ${tone(p.strategyUsd)}">${signed(p.strategyUsd)}</td><td class="r ${tone(change)}">${signed(change)}</td></tr>`;
         }).reverse().join('')}</tbody></table>`
@@ -283,22 +288,22 @@
 
     const ready = e.dailyReturns >= 7;
     const waiting = `needs 7 daily returns (${e.dailyReturns} so far)`;
-    const pf = d.profitFactor === null || d.profitFactor === undefined ? NaN : d.profitFactor;
     $('tiles').innerHTML = [
       tile('Deals', num(d.deals), `${d.wins} won · ${d.losses} lost`),
-      tile('Winning deals', num(d.wins), fin(d.avgWinUsd) ? `average ${signed(d.avgWinUsd)}` : ''),
-      tile('Losing deals', num(d.losses), fin(d.avgLossUsd) ? `average ${signed(-d.avgLossUsd)}` : ''),
-      tile('Win rate', fin(d.winRatePct) ? `${num(d.winRatePct, 1)}%` : '–', 'aim: about 80%'),
-      tile('Risk : reward', fin(d.realizedRiskToReward) ? `${num(d.realizedRiskToReward, 2)} : 1` : '–', 'average loss per average win · aim: 2 : 1 or better'),
-      tile('Planned max loss : credit', fin(d.plannedRiskToReward) ? `${num(d.plannedRiskToReward, 2)} : 1` : '–', 'as priced when each spread opened'),
-      tile('Profit factor', d.deals && d.losses === 0 && d.wins > 0 ? '∞' : fin(pf) ? num(pf, 2) : '–', 'gross profit ÷ gross loss'),
-      tile('Expectancy', signed(d.expectancyUsd), fin(d.avgR) ? `per deal · ${num(d.avgR * 100, 1)}% of max loss` : 'per deal', tone(d.expectancyUsd)),
+      tile('Win rate', fin(d.winRatePct) ? `${num(d.winRatePct, 1)}%` : '–', `${d.wins} of ${d.deals} deals`),
+      tile('Average gain per deal', signedPct(d.avgGainPct, 3), 'of the account value when the deal opened', tone(d.avgGainPct)),
+      tile('Average win', signedPct(d.avgWinPct, 3), fin(d.avgWinUsd) ? `${signed(d.avgWinUsd)} per winning deal` : 'of the account value', tone(d.avgWinPct)),
+      tile('Average loss', signedPct(d.avgLossPct, 3), fin(d.avgLossUsd) ? `${signed(-d.avgLossUsd)} per losing deal` : 'of the account value', tone(d.avgLossPct)),
+      tile('Return on risk', fin(d.avgR) ? signedPct(d.avgR * 100, 1) : '–', "average P&L per deal ÷ that deal's max loss", tone(d.avgR)),
+      tile('Risk : reward', fin(d.realizedRiskToReward) ? `${num(d.realizedRiskToReward, 2)} : 1` : '–', 'average loss per average win'),
+      tile('Profit factor', d.deals && d.losses === 0 && d.wins > 0 ? '∞' : fin(d.profitFactor) ? num(d.profitFactor, 2) : '–', 'gross profit ÷ gross loss'),
+      tile('Expectancy', signed(d.expectancyUsd), 'average P&L per deal', tone(d.expectancyUsd)),
+      tile('Total return', signedPct(e.strategyReturnPct, 2), fin(e.since) ? `since ${when(e.since)}` : 'since the first sample', tone(e.strategyReturnPct)),
       tile('Sharpe ratio', ready ? num(e.sharpe, 2) : '–', ready ? `annualised · ${e.dailyReturns} daily returns` : waiting),
       tile('Sortino ratio', ready ? num(e.sortino, 2) : '–', ready ? 'like Sharpe, but only losing days count as risk' : waiting),
-      tile('Max drawdown', fin(e.maxDrawdownUsd) ? signed(-e.maxDrawdownUsd) : '–', fin(e.maxDrawdownPct) ? `${num(e.maxDrawdownPct, 2)}% from the strategy's peak` : 'on the strategy line', e.maxDrawdownUsd > 0 ? 'neg' : ''),
-      tile('Strategy return', fin(e.strategyReturnPct) ? `${e.strategyReturnPct > 0 ? '+' : ''}${num(e.strategyReturnPct, 2)}%` : '–', fin(e.since) ? `of starting equity, since ${when(e.since)}` : 'since the first sample', tone(e.strategyReturnPct)),
-      tile('Largest win', signed(d.largestWinUsd), '', tone(d.largestWinUsd)),
-      tile('Largest loss', signed(d.largestLossUsd), `longest losing streak: ${d.maxConsecutiveLosses}`, tone(d.largestLossUsd)),
+      tile('Max drawdown', fin(e.maxDrawdownUsd) ? signed(-e.maxDrawdownUsd) : '–', fin(e.maxDrawdownPct) ? `${num(e.maxDrawdownPct, 2)}% from the peak` : 'on the strategy line', e.maxDrawdownUsd > 0 ? 'neg' : ''),
+      tile('Best / worst deal', `${signedPct(d.bestDealPct, 2)} / ${signedPct(d.worstDealPct, 2)}`, `longest losing streak: ${d.maxConsecutiveLosses}`),
+      tile('Max loss : credit', fin(d.plannedRiskToReward) ? `${num(d.plannedRiskToReward, 1)} : 1` : '–', 'average, as filled at entry'),
     ].join('');
   }
 
@@ -319,7 +324,7 @@
     const wrap = $('chart');
     const pts = S.series.map((s) => ({ t: s.t, v: chartKey === 'equity' ? s.equityUsd : s.strategyUsd })).filter((p) => fin(p.v));
     if (pts.length < 2) {
-      wrap.innerHTML = `<div class="none">${S.canTrade ? 'The curve starts after two equity samples (one per minute).' : 'Connect the Deribit test account to start recording equity.'}</div>`;
+      wrap.innerHTML = `<div class="none">${S.canTrade ? 'The curve starts after two samples (one per minute).' : 'Connect the Deribit test account to start recording.'}</div>`;
       return;
     }
     const W = Math.max(wrap.clientWidth - 16, 320);
@@ -346,7 +351,7 @@
     const tickCount = W > 700 ? 6 : 3;
     const xTicks = Array.from({ length: tickCount }, (_, i) => t0 + (i * span) / (tickCount - 1));
     const last = pts[pts.length - 1];
-    const name = chartKey === 'equity' ? 'Account equity' : 'Strategy P&L';
+    const name = chartKey === 'equity' ? 'Account value' : 'Strategy P&L';
 
     wrap.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" tabindex="0" aria-label="${name} over time; use the arrow keys to read values">
       ${ny.ticks.map((v) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text class="tick" x="${L - 8}" y="${y(v)}" text-anchor="end" dominant-baseline="middle">${label(v)}</text>`).join('')}
@@ -378,8 +383,7 @@
       g.querySelector('circle').setAttribute('cy', cy);
       tip.hidden = false;
       tip.innerHTML = `<b>${chartKey === 'strategy' ? signed(p.v) : money(p.v)}</b><span>${new Date(p.t).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>`;
-      const left = cx * scale + 8 + 14;
-      tip.style.left = `${Math.min(left, wrap.clientWidth - tip.offsetWidth - 8)}px`;
+      tip.style.left = `${Math.min(cx * scale + 22, wrap.clientWidth - tip.offsetWidth - 8)}px`;
       tip.style.top = `${Math.max(cy - 44, 4)}px`;
       hoverT = p.t;
     };
@@ -413,7 +417,7 @@
         <td><b>${j.market}</b></td>
         <td>${j.kind === 'entry' ? 'Opening' : 'Closing'} · step ${j.step ?? '–'} of 2: ${esc(j.says ?? '')}</td>
         <td>${esc(j.instrument)}</td>
-        <td class="r">${o ? `${o.side === 'buy' ? 'Buy' : 'Sell'} at ${quote(j.market, o.price)} <span class="muted">${money(o.priceUsd)}</span>` : '<span class="muted">placing…</span>'}</td>
+        <td class="r">${o ? `${o.side === 'buy' ? 'Buy' : 'Sell'} at ${num(o.price, 2)} USDC` : '<span class="muted">placing…</span>'}</td>
         <td class="r">${o ? `${o.filled} / ${o.amount}` : ''}</td>
         <td class="r">${num(left, left < 10 ? 1 : 0)} min</td>
         <td><button class="act" data-stop="${esc(j.id)}">Stop</button></td>
@@ -425,11 +429,11 @@
     const open = S.spreads.filter((s) => ['opening', 'open', 'long-only', 'closing'].includes(s.status));
     $('openNote').textContent = `${open.length} of ${S.maxOpenSpreads} allowed`;
     if (!open.length) {
-      $('open').innerHTML = '<div class="empty">No open spreads. Switch a coin on below, or press Enter now.</div>';
+      $('open').innerHTML = '<div class="empty">No open spreads.</div>';
       return;
     }
     const busy = new Set(S.jobs.map((j) => j.spreadId));
-    $('open').innerHTML = `<table><thead><tr><th>Coin</th><th>Status</th><th>Expires</th><th>Sold / bought put</th><th class="r">Size</th><th class="r">Credit</th><th class="r">Max loss</th><th class="r">Unrealised P&amp;L</th><th class="r">Price above sold put</th><th class="r">Market odds it stays above</th><th></th></tr></thead><tbody>${open.map((sp) => {
+    $('open').innerHTML = `<table><thead><tr><th>Coin</th><th>Status</th><th>Expires</th><th>Sold / bought put</th><th class="r">Size</th><th class="r">Credit</th><th class="r">Max loss</th><th class="r">Risk budget</th><th class="r">Unrealised P&amp;L</th><th class="r">Price above sold put</th><th class="r">Market odds it stays above</th><th></th></tr></thead><tbody>${open.map((sp) => {
       const L = sp.live;
       const chip = sp.status === 'open' && L ? `<span class="chip ${L.state}">${STATE[L.state]}</span>`
         : sp.status === 'long-only' ? '<span class="chip long-only">Long put only</span>'
@@ -438,16 +442,17 @@
       return `<tr>
         <td><b>${sp.market}</b></td>
         <td>${chip}</td>
-        <td>${expiryDay(sp.expiry)}${L ? ` <span class="muted">${num(Math.max(L.daysLeft, 0), 1)}d</span>` : ''}</td>
+        <td>${utc(sp.expiryMs)}${L ? ` <span class="muted">${num(Math.max(L.daysLeft * 24, 0), 1)} h</span>` : ''}</td>
         <td>${strike(sp.shortStrike)} / ${strike(sp.longStrike)}</td>
         <td class="r">${sp.amount}${sp.spareLong ? ` <span class="muted">+${sp.spareLong} long</span>` : ''}</td>
         <td class="r">${sp.creditUsd ? money(sp.creditUsd * sp.amount) : '–'}</td>
         <td class="r">${sp.maxLossUsd ? money(sp.maxLossUsd * sp.amount) : '–'}</td>
+        <td class="r">${money(sp.riskUsd)}</td>
         <td class="r ${tone(pnl)}">${signed(pnl)}${L && fin(L.unrealizedR) ? ` <span class="muted">${L.unrealizedR < 0 ? '−' : '+'}${num(Math.abs(L.unrealizedR * 100))}% of max</span>` : ''}</td>
-        <td class="r">${L ? `${num(L.distancePct, 1)}%` : ''}</td>
+        <td class="r">${L ? `${num(L.distancePct, 2)}%` : ''}</td>
         <td class="r">${L && fin(L.chanceAboveShortPct) ? `${num(L.chanceAboveShortPct)}%` : ''}</td>
         <td>${S.canTrade && !busy.has(sp.id) && (sp.status === 'open' || sp.status === 'long-only') ? `<button class="act" data-close="${esc(sp.id)}">Close</button>` : ''}</td>
-      </tr>${sp.note ? `<tr><td></td><td colspan="10" class="note-row">${esc(sp.note)}</td></tr>` : ''}`;
+      </tr>${sp.note ? `<tr><td></td><td colspan="11" class="note-row">${esc(sp.note)}</td></tr>` : ''}`;
     }).join('')}</tbody></table>`;
   }
 
@@ -457,47 +462,49 @@
       return;
     }
     if (!S.positions.length) {
-      $('positions').innerHTML = '<div class="empty">No option positions on the account.</div>';
+      $('positions').innerHTML = '<div class="empty">No USDC option positions on the account.</div>';
       return;
     }
     $('positions').innerHTML = `<table><thead><tr><th>Instrument</th><th class="r">Size</th><th class="r">Average price</th><th class="r">Mark</th><th class="r">Unrealised P&amp;L</th><th class="r">Delta</th></tr></thead><tbody>${S.positions.map((p) => `<tr>
       <td>${esc(p.instrument)}</td>
       <td class="r">${p.size > 0 ? '+' : ''}${p.size}</td>
-      <td class="r">${+p.averagePrice.toFixed(4)} <span class="muted">${money(p.averagePriceUsd)}</span></td>
-      <td class="r">${+p.markPrice.toFixed(4)}</td>
+      <td class="r">${num(p.averagePrice, 2)}</td>
+      <td class="r">${num(p.markPrice, 2)}</td>
       <td class="r ${tone(p.floatingPnlUsd)}">${signed(p.floatingPnlUsd)}</td>
       <td class="r">${num(p.delta, 3)}</td>
     </tr>`).join('')}</tbody></table>`;
   }
 
   function coinCard(m) {
-    const st = m.settings;
     const d = m.id === 'SOL' ? 2 : 0;
     const p = m.plan;
+    const z = m.size;
+    const w = S.entry;
+    const sized = p && z && z.amount > 0;
     const above = fin(m.sma50) && fin(m.spot) ? m.spot > m.sma50 : null;
-    const days = p ? Math.round((p.expiryMs - Date.now()) / 864e5) : 0;
     return `<div class="card ${m.tradingOn ? 'on' : ''}">
       <div class="row">
         <div><div class="coin">${m.id}</div><div class="figure">${money(m.spot, d)}</div></div>
-        <label class="switch"><input type="checkbox" data-trade="${m.id}" ${m.tradingOn ? 'checked' : ''} aria-label="Trade ${m.id}"> ${m.tradingOn ? 'Trading on' : 'Trading off'}</label>
+        <label class="switch"><input type="checkbox" data-trade="${m.id}" ${m.tradingOn ? 'checked' : ''} aria-label="Trade ${m.id}"> ${m.tradingOn ? 'Trading on' : 'Paused'}</label>
       </div>
-      <div class="small soft">${m.tradingOn ? 'The bot starts an entry in the Friday window whenever the rule is met.' : 'Your call: switch on only when you judge the market is in a range or rising.'}</div>
+      <div class="small soft">${m.tradingOn ? `Opens one spread every day between ${w.fromUtc} and ${w.toUtc} UTC.` : `Paused: no new ${m.id} spreads until you switch it back on.`}</div>
       ${above === null ? '' : `<div class="small muted">Price is ${above ? 'above' : 'below'} its 50-day average of ${money(m.sma50, d)}</div>`}
       <div class="plan">
-        <div class="small soft">If it traded now, at mid prices: ~${st.dte}-day expiry, strikes ${+(st.widthPct * 100).toFixed(1)}% apart, max loss at most ${st.maxLossToCredit}× the credit, size ${st.amount} ${m.id}</div>
+        <div class="small soft">Today's spread, at mid prices after fees</div>
         ${p ? `
-          <div>Buy the <b>${strike(p.longStrike)}</b> put, then sell the <b>${strike(p.shortStrike)}</b> put · ${expiryDay(p.expiry)} (${days} days)</div>
+          <div>Buy the <b>${strike(p.longStrike)}</b> put, then sell the <b>${strike(p.shortStrike)}</b> put · expires ${utc(p.expiryMs)} (${num(p.hoursToExpiry, 0)} h)</div>
           <div class="kv">
-            <div><span>Collect</span><b>${money(p.creditUsd * st.amount)}</b></div>
-            <div><span>Max loss</span><b>${money(p.maxLossUsd * st.amount)}</b></div>
-            <div><span>Market odds of profit</span><b>${num(p.marketWinPct)}%</b></div>
+            <div><span>Size for ${num(S.account.riskPerTradePct, 1)}% risk</span><b>${sized ? `${z.amount} ${m.id}` : '–'}</b></div>
+            <div><span>Collect</span><b>${sized ? money(p.creditUsd * z.amount) : '–'}</b></div>
+            <div><span>Max loss</span><b>${sized ? money(p.maxLossUsd * z.amount) : '–'}</b></div>
           </div>
-          <div class="small muted">Sold put sits ${num(p.distancePct, 1)}% below the price · max loss is ${num(p.lossToCredit, 2)}× the credit</div>`
+          <div class="small muted">Sold put ${num(p.distancePct, 2)}% below the price · strikes ${money(p.shortStrike - p.longStrike, d)} apart · max loss ${num(p.lossToCredit, 1)}× the credit · market odds of profit ${num(p.marketWinPct)}%</div>
+          ${z && !z.amount ? `<div class="small warn-text">Even the smallest order (${z.minAmount} ${m.id}) would risk more than ${money(z.riskUsd)}.</div>` : ''}`
         : `<div class="small muted">${esc(m.error ? `Price feed error: ${m.error}` : m.skip ?? 'Loading prices…')}</div>`}
       </div>
       <div class="row">
-        <span class="small muted">${m.working ? 'Entry orders working' : m.enteredThisWeek ? 'Entered this week' : ''}</span>
-        <button class="act primary" data-enter="${m.id}" ${S.canTrade && p && !m.working ? '' : 'disabled'}>Enter now</button>
+        <span class="small muted">${m.working ? 'Entry orders working' : m.enteredToday ? 'Entered today' : ''}</span>
+        <button class="act primary" data-enter="${m.id}" ${S.canTrade && sized && !m.working ? '' : 'disabled'}>Enter now</button>
       </div>
     </div>`;
   }
@@ -508,9 +515,10 @@
       $('deals').innerHTML = '<div class="empty">No finished deals yet.</div>';
       return;
     }
-    $('deals').innerHTML = `<table><thead><tr><th>Coin</th><th>Opened</th><th>Finished</th><th>Sold / bought put</th><th class="r">Size</th><th class="r">Credit</th><th class="r">Max loss</th><th class="r">P&amp;L</th><th class="r">% of max loss</th><th>Result</th></tr></thead><tbody>${done.map((sp) => {
+    $('deals').innerHTML = `<table><thead><tr><th>Coin</th><th>Opened</th><th>Finished</th><th>Sold / bought put</th><th class="r">Size</th><th class="r">Credit</th><th class="r">Max loss</th><th class="r">P&amp;L</th><th class="r">% of account</th><th class="r">% of max loss</th><th>Result</th></tr></thead><tbody>${done.map((sp) => {
       const risk = sp.openedAmount * sp.maxLossUsd;
-      const r = risk > 0 && fin(sp.pnlUsd) ? sp.pnlUsd / risk : NaN;
+      const onRisk = risk > 0 && fin(sp.pnlUsd) ? (100 * sp.pnlUsd) / risk : NaN;
+      const onAccount = sp.accountUsdAtEntry > 0 && fin(sp.pnlUsd) ? (100 * sp.pnlUsd) / sp.accountUsdAtEntry : NaN;
       const result = sp.status === 'cancelled' ? '<span class="chip">Cancelled</span>' : sp.pnlUsd > 0 ? '<span class="chip win">Win</span>' : sp.pnlUsd < 0 ? '<span class="chip loss">Loss</span>' : '<span class="chip">Flat</span>';
       return `<tr>
         <td><b>${sp.market}</b></td>
@@ -521,7 +529,8 @@
         <td class="r">${sp.creditUsd ? money(sp.creditUsd * sp.openedAmount) : '–'}</td>
         <td class="r">${risk ? money(risk) : '–'}</td>
         <td class="r ${tone(sp.pnlUsd)}">${signed(sp.pnlUsd)}</td>
-        <td class="r ${tone(r)}">${fin(r) ? `${r > 0 ? '+' : r < 0 ? '−' : ''}${num(Math.abs(r * 100), 1)}%` : '–'}</td>
+        <td class="r ${tone(onAccount)}">${signedPct(onAccount, 3)}</td>
+        <td class="r ${tone(onRisk)}">${signedPct(onRisk, 1)}</td>
         <td>${result}</td>
       </tr>`;
     }).join('')}</tbody></table>`;
@@ -553,8 +562,9 @@
     const ex = S.execution;
     if (b.dataset.enter) {
       const m = S.markets.find((x) => x.id === b.dataset.enter);
-      if (!m?.plan) return;
-      const ok = confirm(`${MODE[S.mode]}\n\nStart a limit-order entry for ${m.id}?\n1. Limit BUY ${m.settings.amount} ${m.plan.longName} at the mid (up to ${ex.buyLongMinutes} min)\n2. Then limit SELL ${m.plan.shortName} at the mid, never below the ${m.settings.maxLossToCredit}:1 price (up to ${ex.sellShortMinutes} min)`);
+      if (!m?.plan || !m.size?.amount) return;
+      const p = m.plan;
+      const ok = confirm(`${MODE[S.mode]}\n\nOpen today's ${m.id} spread now, with limit orders?\n1. Limit BUY ${m.size.amount} ${p.longName} at the mid (up to ${ex.buyLongMinutes} min)\n2. Then limit SELL ${m.size.amount} ${p.shortName} at the mid (up to ${ex.sellShortMinutes} min)\n\nMost the whole spread can lose: about ${money(p.maxLossUsd * m.size.amount)}, within the ${money(m.size.riskUsd)} budget.`);
       if (!ok) return;
       b.disabled = true;
       const r = await post('/api/enter', { market: m.id });

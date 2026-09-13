@@ -13,24 +13,18 @@ import type { EquitySample } from './metrics.ts';
 export type BotEvent = { t: string; level: 'info' | 'warn' | 'error'; msg: string };
 
 export type BotState = {
-  /** Ivan's call, per coin, that the market is in a range or rising. Off until he turns it on. */
+  /** Per coin: trade it. On by default; the dashboard switch pauses a coin. */
   tradingOn: Record<MarketId, boolean>;
-  /** The Friday whose entry has already started, per coin. */
-  lastEntryWeek: Partial<Record<MarketId, string>>;
+  /** The UTC date whose entry has already started, per coin. */
+  lastEntryDay: Partial<Record<MarketId, string>>;
   spreads: SpreadRecord[];
   /** Order work in progress (and recently finished). */
   jobs: Job[];
   events: BotEvent[];
 };
 
-export function loadState(file: string): BotState {
-  const empty: BotState = {
-    tradingOn: { BTC: false, ETH: false, SOL: false },
-    lastEntryWeek: {},
-    spreads: [],
-    jobs: [],
-    events: [],
-  };
+export function loadState(file: string, tradingDefaults: Record<MarketId, boolean>): BotState {
+  const empty: BotState = { tradingOn: { ...tradingDefaults }, lastEntryDay: {}, spreads: [], jobs: [], events: [] };
   if (!existsSync(file)) return empty;
   return { ...empty, ...JSON.parse(readFileSync(file, 'utf8')) };
 }
