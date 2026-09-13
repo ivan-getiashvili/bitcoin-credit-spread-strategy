@@ -252,10 +252,15 @@
     const d = S.metrics.deals;
     $('hero').textContent = !S.canTrade ? 'Not connected' : fin(a.equityUsd) ? money(a.equityUsd) : 'Reading…';
     $('hero').classList.toggle('muted', !S.canTrade || !fin(a.equityUsd));
-    const balances = (a.currencies || []).map((c) => `${num(c.equity, ['BTC', 'ETH'].includes(c.currency) ? 4 : 2)} ${esc(c.currency)}`).join(' · ');
+    // Only coins the bot can price make up the equity figure; the rest are counted, not listed.
+    const unpriced = new Set(a.unpriced || []);
+    const balances = (a.currencies || [])
+      .filter((c) => !unpriced.has(c.currency))
+      .map((c) => `${num(c.equity, ['BTC', 'ETH'].includes(c.currency) ? 4 : 2)} ${esc(c.currency)}`)
+      .join(' · ');
     $('heroSub').innerHTML = !S.canTrade
       ? 'Connect the test account to see equity'
-      : `${balances || 'no balances yet'}${fin(e.accountChangeUsd) ? ` · <span class="${tone(e.accountChangeUsd)}">${signed(e.accountChangeUsd)}</span> since ${when(e.since)}` : ''}${a.unpriced?.length ? ` · not valued: ${esc(a.unpriced.join(', '))}` : ''}`;
+      : `${balances || 'no balances yet'}${fin(e.accountChangeUsd) ? ` · <span class="${tone(e.accountChangeUsd)}">${signed(e.accountChangeUsd)}</span> since ${when(e.since)}` : ''}${unpriced.size ? ` · <span title="${esc([...unpriced].join(', '))}">${unpriced.size} other coin${unpriced.size === 1 ? '' : 's'} not counted</span>` : ''}`;
     $('unreal').innerHTML = `<span class="${tone(S.totals.unrealizedUsd)}">${signed(S.totals.unrealizedUsd)}</span>`;
     $('unrealSub').textContent = `${S.totals.open} open · ${money(S.totals.openRiskUsd)} at risk`;
     $('realised').innerHTML = `<span class="${tone(d.netPnlUsd)}">${signed(d.netPnlUsd)}</span>`;
@@ -318,13 +323,19 @@
       return;
     }
     const W = Math.max(wrap.clientWidth - 16, 320);
-    const H = 280, L = 64, R = 84, T = 14, B = 30;
+    const H = 280, R = 96, T = 14, B = 30;
     const t0 = pts[0].t, t1 = pts[pts.length - 1].t;
     let lo = Math.min(...pts.map((p) => p.v));
     let hi = Math.max(...pts.map((p) => p.v));
     if (chartKey === 'strategy') { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
     const pad = (hi - lo) * 0.08 || Math.abs(hi) * 0.01 || 1;
     const ny = niceTicks(lo - pad, hi + pad, 4);
+    // Compact labels ($10.45M) only while they can still tell the ticks apart; otherwise whole dollars.
+    const tickStep = ny.ticks.length > 1 ? ny.ticks[1] - ny.ticks[0] : 1;
+    const big = Math.max(Math.abs(ny.lo), Math.abs(ny.hi));
+    const resolution = big >= 1e6 ? 1e4 : big >= 1e4 ? 100 : 0.01;
+    const label = (v) => (tickStep >= resolution ? compact(v) : `${v < 0 ? '−' : ''}$${num(Math.abs(v), tickStep < 1 ? 2 : 0)}`);
+    const L = Math.max(64, Math.max(...ny.ticks.map((v) => label(v).length)) * 7 + 14);
     const x = (t) => L + ((t - t0) / Math.max(t1 - t0, 1)) * (W - L - R);
     const y = (v) => T + (1 - (v - ny.lo) / (ny.hi - ny.lo)) * (H - T - B);
     const line = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`).join('');
@@ -338,13 +349,13 @@
     const name = chartKey === 'equity' ? 'Account equity' : 'Strategy P&L';
 
     wrap.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" tabindex="0" aria-label="${name} over time; use the arrow keys to read values">
-      ${ny.ticks.map((v) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text class="tick" x="${L - 8}" y="${y(v)}" text-anchor="end" dominant-baseline="middle">${compact(v)}</text>`).join('')}
+      ${ny.ticks.map((v) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text class="tick" x="${L - 8}" y="${y(v)}" text-anchor="end" dominant-baseline="middle">${label(v)}</text>`).join('')}
       ${chartKey === 'strategy' ? `<line class="axis" x1="${L}" x2="${W - R}" y1="${y(0)}" y2="${y(0)}"/>` : `<line class="axis" x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}"/>`}
       ${xTicks.map((t) => `<text class="tick" x="${x(t)}" y="${H - B + 18}" text-anchor="middle">${tickLabel(t)}</text>`).join('')}
       <path class="area" d="${area}"/>
       <path class="line" d="${line}"/>
       <circle class="dot" cx="${x(last.t)}" cy="${y(last.v)}" r="4"/>
-      <text class="endlabel" x="${x(last.t) + 10}" y="${y(last.v)}" dominant-baseline="middle">${compact(last.v)}</text>
+      <text class="endlabel" x="${x(last.t) + 10}" y="${y(last.v)}" dominant-baseline="middle">${label(last.v)}</text>
       <g class="hover" visibility="hidden"><line class="cross" y1="${T}" y2="${H - B}"/><circle class="dot" r="4"/></g>
     </svg><div class="tip" hidden></div>`;
 
