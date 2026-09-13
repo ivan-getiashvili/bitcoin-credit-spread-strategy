@@ -1,11 +1,12 @@
 /**
- * Black-Scholes, used only for probabilities and delta.
+ * Black-Scholes, used for probabilities, delta, and nudging real prices.
  *
  * Deribit publishes greeks, but one request per instrument means ~950 requests
  * to grade a whole chain. The closed form is instant and, for delta and
  * probability-of-touch, close enough to Deribit's own numbers to make the
  * round trip pointless. Prices always come from the exchange, never from here —
- * a model price is an opinion, and the bid is a fact.
+ * a model price is an opinion, and the bid is a fact. `putPrice` exists only to
+ * shift a real traded price across a few hours of time and spot movement.
  */
 
 /** Standard normal CDF (Abramowitz & Stegun 26.2.17, |error| < 7.5e-8). */
@@ -33,4 +34,18 @@ export function bs(s: number, k: number, t: number, vol: number, type: 'call' | 
   // N(d2) is the chance a call expires ITM; 1 - N(d2) for a put.
   const probItm = type === 'call' ? normCdf(d2) : 1 - normCdf(d2);
   return { d1, d2, callDelta, putDelta, probItm };
+}
+
+/**
+ * Black-76 put value in the units of `f` and `k`, with r = 0. Never a price in
+ * its own right: the backtest uses the DIFFERENCE between two of these to move a
+ * traded price from the moment it traded to the moment of entry.
+ */
+export function putPrice(f: number, k: number, t: number, vol: number): number {
+  if (!(f > 0 && k > 0)) return 0;
+  if (!(t > 0 && vol > 0)) return Math.max(k - f, 0);
+  const sq = vol * Math.sqrt(t);
+  const d1 = (Math.log(f / k) + (vol * vol * t) / 2) / sq;
+  const d2 = d1 - sq;
+  return k * normCdf(-d2) - f * normCdf(-d1);
 }

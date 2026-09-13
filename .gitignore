@@ -9,6 +9,9 @@ node_modules/
 _site/
 dist/
 data/*.json
+data/*.jsonl
+data/*.tmp
+data/history/
 !data/.gitkeep
 
 .DS_Store

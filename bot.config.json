@@ -1,0 +1,22 @@
+{
+  "mode": "testnet",
+  "port": 4191,
+  "pollSeconds": 10,
+  "chainSeconds": 30,
+  "sampleSeconds": 60,
+  "maxOpenSpreads": 4,
+  "alertDistancePct": 3,
+  "entry": { "weekdayUtc": 5, "fromUtc": "08:05", "toUtc": "11:00" },
+  "execution": {
+    "repriceSeconds": 30,
+    "maxConcessionPct": 0,
+    "buyLongMinutes": 30,
+    "sellShortMinutes": 120,
+    "exitLegMinutes": 60
+  },
+  "markets": {
+    "BTC": { "dte": 28, "widthPct": 0.06, "maxLossToCredit": 2, "amount": 0.1 },
+    "ETH": { "dte": 28, "widthPct": 0.06, "maxLossToCredit": 2, "amount": 1 },
+    "SOL": { "dte": 28, "widthPct": 0.06, "maxLossToCredit": 2, "amount": 10 }
+  }
+}

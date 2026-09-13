@@ -2,12 +2,15 @@
   "name": "bitcoin-credit-spread-strategy",
   "version": "0.1.0",
   "private": true,
-  "description": "Finds and evaluates defined-risk credit spreads on Bitcoin options.",
+  "description": "Finds, backtests and evaluates defined-risk put credit spreads on BTC, ETH and SOL options.",
   "type": "module",
   "engines": { "node": ">=22.6" },
   "scripts": {
     "chain": "node --experimental-strip-types scripts/fetch-chain.ts",
     "spreads": "node --experimental-strip-types scripts/find-spreads.ts",
-    "serve": "python3 -m http.server 4190 --directory _site"
+    "history": "node --experimental-strip-types scripts/fetch-history.ts",
+    "backtest": "node --experimental-strip-types scripts/backtest.ts",
+    "bot": "node --experimental-strip-types scripts/bot.ts",
+    "test": "node --experimental-strip-types --test test/executor.test.ts test/metrics.test.ts"
   }
 }

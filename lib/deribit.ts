@@ -1,22 +1,30 @@
 /**
  * Deribit public market data. Keyless — no account needed to read the chain.
  *
- * THE THING THAT WILL BITE YOU: Deribit BTC options are INVERSE. Every premium,
- * bid and ask is quoted in BTC, not dollars, and each contract is worth 1 BTC of
- * underlying. Verified against a live quote: BTC-13SEP26-85000-P marked
- * 0.09975858 BTC with the index at 77,289.71, and 0.09975858 x 77,289.71 =
+ * THE THING THAT WILL BITE YOU: Deribit BTC and ETH options are INVERSE. Every
+ * premium, bid and ask is quoted in the coin, not dollars, and each contract is
+ * worth 1 coin of underlying. Verified against a live quote: BTC-13SEP26-85000-P
+ * marked 0.09975858 BTC with the index at 77,289.71, and 0.09975858 x 77,289.71 =
  * $7,710 — exactly its intrinsic value of 85,000 - 77,290.
  *
  * So a "0.01 credit" is 0.01 BTC, whose dollar value moves with BTC itself.
  * Treating those numbers as dollars would understate a position by roughly five
  * orders of magnitude, and every risk figure downstream would be fiction.
+ *
+ * SOL options (SOL_USDC-...) are the opposite: LINEAR, quoted in USDC per SOL,
+ * with one contract covering 10 SOL. See lib/markets.ts.
+ *
+ * Every function takes an optional API base, so the bot reads the books of the
+ * exchange it trades on.
  */
+import { MARKETS, parseName, type Market } from './markets.ts';
 
-const BASE = 'https://www.deribit.com/api/v2/public';
+export const MAINNET = 'https://www.deribit.com/api/v2';
+export const TESTNET = 'https://test.deribit.com/api/v2';
 
-async function get(path: string, params: Record<string, string> = {}, timeoutMs = 30_000): Promise<any> {
+async function get(path: string, params: Record<string, string> = {}, timeoutMs = 30_000, base = MAINNET): Promise<any> {
   const qs = new URLSearchParams(params).toString();
-  const res = await fetch(`${BASE}/${path}${qs ? '?' + qs : ''}`, {
+  const res = await fetch(`${base}/public/${path}${qs ? '?' + qs : ''}`, {
     headers: { Accept: 'application/json' },
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -33,36 +41,21 @@ export type Option = {
   expiryMs: number;
   daysToExpiry: number;
   type: 'call' | 'put';
-  /** All premiums are in BTC. Multiply by `underlying` for dollars. */
+  /** Premiums in the quote currency: the coin for inverse books, USDC for linear. */
   bid: number | null;
   ask: number | null;
   mark: number;
   markIv: number | null;   // percent
   openInterest: number;
   volume24h: number;
-  underlying: number;      // USD
+  /** This expiry's FORWARD price, USD. */
+  underlying: number;
+  /** Spot index, USD — the price the option settles against. */
+  index: number;
 };
 
-/** "BTC-13SEP26-85000-P" -> its parts. Returns null for anything unexpected. */
-function parseName(name: string): { expiry: string; expiryMs: number; strike: number; type: 'call' | 'put' } | null {
-  const m = /^BTC-(\d{1,2})([A-Z]{3})(\d{2})-(\d+(?:d\d+)?)-([CP])$/.exec(name);
-  if (!m) return null;
-  const [, d, mon, yy, strikeRaw, cp] = m;
-  const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
-  const mi = months.indexOf(mon);
-  if (mi < 0) return null;
-  // Deribit expiries settle at 08:00 UTC.
-  const ms = Date.UTC(2000 + Number(yy), mi, Number(d), 8, 0, 0);
-  return {
-    expiry: new Date(ms).toISOString().slice(0, 10),
-    expiryMs: ms,
-    strike: Number(String(strikeRaw).replace('d', '.')),
-    type: cp === 'C' ? 'call' : 'put',
-  };
-}
-
 /**
- * The whole BTC option chain in one request.
+ * A whole option chain in one request.
  *
  * `underlying_price` is per-expiry: it is the FORWARD for that expiry, not the
  * spot. In contango the June 2027 forward sits thousands of dollars above the
@@ -70,21 +63,19 @@ function parseName(name: string): { expiry: string; expiryMs: number; strike: nu
  * earlier version did — priced a two-hour option off a nine-month forward and
  * turned a deep in-the-money put into an apparently out-of-the-money one, with
  * $2,700 of intrinsic value reported as premium. Every option keeps its own
- * forward; `spot` below is the index, taken from the nearest expiry.
+ * forward; `spot` is the settlement index, which is the same for every row.
  */
-export async function getChain(): Promise<{ options: Option[]; spot: number; fetchedAt: string }> {
-  const rows: any[] = await get('get_book_summary_by_currency', { currency: 'BTC', kind: 'option' }, 45_000);
+export async function getChain(market: Market = MARKETS.BTC, base = MAINNET): Promise<{ options: Option[]; spot: number; fetchedAt: string }> {
+  const rows: any[] = await get('get_book_summary_by_currency', { currency: market.currency, kind: 'option' }, 45_000, base);
   const now = Date.now();
   const options: Option[] = [];
-  let nearestMs = Infinity;
   let spot = 0;
 
   for (const r of rows) {
-    const p = parseName(String(r.instrument_name));
+    const p = parseName(String(r.instrument_name), market.prefix);
     if (!p) continue;
-    const u = Number(r.underlying_price) || 0;
-    // The front expiry's forward is the closest thing to spot in this payload.
-    if (u > 0 && p.expiryMs < nearestMs) { nearestMs = p.expiryMs; spot = u; }
+    const index = Number(r.estimated_delivery_price) || 0;
+    if (index > 0) spot = index;
     options.push({
       name: r.instrument_name,
       strike: p.strike,
@@ -98,18 +89,80 @@ export async function getChain(): Promise<{ options: Option[]; spot: number; fet
       markIv: r.mark_iv ?? null,
       openInterest: Number(r.open_interest) || 0,
       volume24h: Number(r.volume) || 0,
-      underlying: u,
+      underlying: Number(r.underlying_price) || 0,
+      index,
     });
   }
-  if (!options.length) throw new Error('Deribit returned an empty chain');
-  if (!(spot > 0)) throw new Error('Deribit chain carried no usable underlying price');
+  if (!options.length) throw new Error(`Deribit returned an empty ${market.id} chain`);
+  if (!(spot > 0)) throw new Error(`Deribit ${market.id} chain carried no usable index price`);
   return { options, spot, fetchedAt: new Date().toISOString() };
 }
 
+export type Book = {
+  /** [price, amount] levels, best first. Prices in the quote currency, amounts in the underlying coin. */
+  bids: [number, number][];
+  asks: [number, number][];
+  /** Deribit's fair price for the option, quote currency. */
+  mark: number;
+  /** Spot index, USD. */
+  index: number;
+};
+
+export async function getOrderBook(name: string, depth = 5, base = MAINNET): Promise<Book> {
+  const r = await get('get_order_book', { instrument_name: name, depth: String(depth) }, 30_000, base);
+  return { bids: r.bids ?? [], asks: r.asks ?? [], mark: Number(r.mark_price) || 0, index: Number(r.index_price) || 0 };
+}
+
+export type InstrumentSpec = {
+  name: string;
+  /** Smallest price step, quote currency. */
+  tickSize: number;
+  /** Coarser steps that apply from `above` upward (e.g. 0.0005 BTC above 0.005 BTC). */
+  tickSteps: { above: number; tick: number }[];
+  /** Smallest order, in units of the underlying. */
+  minAmount: number;
+  contractSize: number;
+};
+
+export async function getInstrumentSpecs(market: Market, base = MAINNET): Promise<Map<string, InstrumentSpec>> {
+  const rows: any[] = await get('get_instruments', { currency: market.currency, kind: 'option' }, 30_000, base);
+  const out = new Map<string, InstrumentSpec>();
+  for (const r of rows) {
+    if (!parseName(String(r.instrument_name), market.prefix)) continue;
+    out.set(r.instrument_name, {
+      name: r.instrument_name,
+      tickSize: Number(r.tick_size),
+      tickSteps: (r.tick_size_steps ?? [])
+        .map((s: any) => ({ above: Number(s.above_price), tick: Number(s.tick_size) }))
+        .sort((a: { above: number }, b: { above: number }) => a.above - b.above),
+      minAmount: Number(r.min_trade_amount),
+      contractSize: Number(r.contract_size),
+    });
+  }
+  return out;
+}
+
+/** Put a price on the instrument's tick grid, rounding down (for buys) or up (for sells). */
+export function toTick(price: number, spec: InstrumentSpec, direction: 'down' | 'up'): number {
+  let tick = spec.tickSize;
+  for (const s of spec.tickSteps) if (price >= s.above) tick = s.tick;
+  const steps = price / tick;
+  const k = direction === 'down' ? Math.floor(steps + 1e-9) : Math.ceil(steps - 1e-9);
+  return Number((k * tick).toFixed(10));
+}
+
+/** The most recent daily 08:00 UTC settlement prices, date -> price. */
+export async function getRecentDeliveryPrices(indexName: string, count = 60, base = MAINNET): Promise<Record<string, number>> {
+  const r = await get('get_delivery_prices', { index_name: indexName, offset: '0', count: String(count) }, 30_000, base);
+  const out: Record<string, number> = {};
+  for (const d of r.data ?? []) out[d.date] = d.delivery_price;
+  return out;
+}
+
 /** Annualised realised volatility, percent. Deribit publishes ~2 weeks of it. */
-export async function getRealisedVol(): Promise<{ points: { t: number; v: number }[]; latest: number } | null> {
+export async function getRealisedVol(currency = 'BTC'): Promise<{ points: { t: number; v: number }[]; latest: number } | null> {
   try {
-    const r: [number, number][] = await get('get_historical_volatility', { currency: 'BTC' });
+    const r: [number, number][] = await get('get_historical_volatility', { currency });
     const points = r.map(([t, v]) => ({ t, v }));
     return { points, latest: points.at(-1)?.v ?? 0 };
   } catch { return null; }

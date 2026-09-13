@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Put Spread Bot</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7; --surface: #fcfcfb; --well: #f1f0eb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+    --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11, 11, 11, .10);
+    --series: #2a78d6; --wash: rgba(42, 120, 214, .10); --accent: #2a78d6;
+    --good: #006300; --good-wash: rgba(12, 163, 12, .12);
+    --bad: #d03b3b; --bad-wash: rgba(208, 59, 59, .12);
+    --warn: #7a5200; --warn-wash: rgba(250, 178, 25, .22);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d; --surface: #1a1a19; --well: #242423; --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835; --border: rgba(255, 255, 255, .10);
+      --series: #3987e5; --wash: rgba(57, 135, 229, .10); --accent: #3987e5;
+      --good: #0ca30c; --good-wash: rgba(12, 163, 12, .16);
+      --bad: #f06a6a; --bad-wash: rgba(208, 59, 59, .20);
+      --warn: #fab219; --warn-wash: rgba(250, 178, 25, .14);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .tab { font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); }
+  .soft { color: var(--ink-2); }
+  .small { font-size: 12px; }
+  .pos { color: var(--good); }
+  .neg { color: var(--bad); }
+
+  header { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px;
+    padding: 12px 24px; background: var(--surface); border-bottom: 1px solid var(--border); }
+  h1 { margin: 0; font-size: 16px; letter-spacing: -0.01em; }
+  .mode { font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 3px 9px; border-radius: 999px; background: var(--warn-wash); color: var(--warn); }
+  .mode.live { background: var(--bad); color: #fff; }
+  .conn { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); }
+  .dot.on { background: var(--good); }
+  .window { margin-left: auto; font-size: 12px; color: var(--ink-2); }
+  .window b { color: var(--ink); font-weight: 600; }
+
+  main { max-width: 1240px; margin: 0 auto; padding: 20px 24px 56px; display: grid; gap: 20px; }
+  .banner { padding: 10px 14px; border-radius: 8px; background: var(--warn-wash); color: var(--warn); margin-bottom: 8px; }
+  .banner.bad { background: var(--bad-wash); color: var(--bad); }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .panel > h2 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 0; padding: 14px 16px 10px; font-size: 14px; }
+  .panel > h2 .muted { font-weight: 400; font-size: 12px; }
+  .empty { padding: 4px 16px 16px; color: var(--muted); }
+
+  .perf-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px 36px; padding: 18px 16px 6px; }
+  .label { font-size: 12px; color: var(--ink-2); }
+  .hero { font-size: 48px; font-weight: 600; letter-spacing: -0.03em; line-height: 1.05; }
+  .figure { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+  .sub { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
+  .seg { margin-left: auto; display: inline-flex; padding: 2px; border-radius: 8px; background: var(--well); }
+  .seg button { border: 0; background: transparent; color: var(--ink-2); padding: 5px 10px; border-radius: 6px; font: inherit; font-size: 12px; cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 0 0 1px var(--border); }
+
+  .chart { position: relative; min-height: 280px; padding: 4px 8px 0; }
+  .chart svg { display: block; width: 100%; height: 280px; outline: none; }
+  .chart svg:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); border-radius: 6px; }
+  .chart .grid { stroke: var(--grid); stroke-width: 1; }
+  .chart .axis { stroke: var(--axis); stroke-width: 1; }
+  .chart .tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .chart .line { fill: none; stroke: var(--series); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .chart .area { fill: var(--wash); }
+  .chart .dot { fill: var(--series); stroke: var(--surface); stroke-width: 2; }
+  .chart .cross { stroke: var(--axis); stroke-width: 1; }
+  .chart .endlabel { fill: var(--ink); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .chart .none { display: grid; place-items: center; height: 280px; color: var(--muted); text-align: center; padding: 0 24px; }
+  .tip { position: absolute; z-index: 2; display: grid; gap: 1px; padding: 6px 10px; white-space: nowrap; pointer-events: none;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 20px rgba(0, 0, 0, .14); }
+  .tip[hidden] { display: none; }
+  .tip b { font-size: 14px; font-variant-numeric: tabular-nums; }
+  .tip span { font-size: 11px; color: var(--ink-2); }
+  .note { padding: 2px 16px 10px; font-size: 12px; color: var(--muted); }
+  details.data { padding: 0 16px 12px; font-size: 12px; }
+  details.data summary { cursor: pointer; color: var(--ink-2); }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); border-top: 1px solid var(--border); overflow: hidden; }
+  /* Hairlines drawn by each tile, so an unfilled last row stays plain surface. */
+  .tile { display: grid; align-content: start; gap: 2px; padding: 12px 16px; background: var(--surface); box-shadow: 1px 0 0 var(--border), 0 1px 0 var(--border); }
+  .tile .value { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+  .tile .cap { font-size: 11px; color: var(--muted); }
+
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 8px 12px; text-align: left; white-space: nowrap; border-top: 1px solid var(--border); }
+  th { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  td { font-variant-numeric: tabular-nums; }
+  .r { text-align: right; }
+  td.note-row { white-space: normal; font-size: 12px; color: var(--warn); border-top: 0; padding-top: 0; }
+  .chip { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--well); color: var(--ink-2); }
+  .chip.safe, .chip.win { background: var(--good-wash); color: var(--good); }
+  .chip.watch, .chip.long-only { background: var(--warn-wash); color: var(--warn); }
+  .chip.breached, .chip.loss { background: var(--bad-wash); color: var(--bad); }
+
+  .coins { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 16px; }
+  .card { display: grid; align-content: start; gap: 10px; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
+  .card.on { box-shadow: inset 3px 0 0 var(--good); }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .coin { font-size: 12px; font-weight: 700; letter-spacing: .04em; color: var(--ink-2); }
+  .switch { display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; user-select: none; }
+  .switch input { appearance: none; position: relative; width: 38px; height: 22px; margin: 0; border-radius: 999px; background: var(--axis); cursor: pointer; transition: background .15s; }
+  .switch input::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .25); transition: transform .15s; }
+  .switch input:checked { background: var(--good); }
+  .switch input:checked::after { transform: translateX(16px); }
+  .switch input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .plan { display: grid; gap: 6px; padding: 10px 12px; border-radius: 8px; background: var(--well); }
+  .kv { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .kv span { display: block; font-size: 11px; color: var(--ink-2); }
+  .kv b { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  button.act { font: inherit; padding: 5px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--ink); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.act:disabled { opacity: .45; cursor: not-allowed; }
+
+  .log { max-height: 340px; overflow: auto; font-size: 12px; }
+  .log div { display: grid; grid-template-columns: 110px 1fr; gap: 10px; padding: 6px 16px; border-top: 1px solid var(--border); }
+  .log .warn { color: var(--warn); }
+  .log .error { color: var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Put Spread Bot</h1>
+  <span id="mode" class="mode">connecting</span>
+  <span class="conn"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
+  <span id="window" class="window"></span>
+</header>
+<main>
+  <div id="banners"></div>
+
+  <section class="panel" aria-label="Performance">
+    <div class="perf-head">
+      <div>
+        <div class="label">Account equity</div>
+        <div id="hero" class="hero">–</div>
+        <div id="heroSub" class="sub"></div>
+      </div>
+      <div>
+        <div class="label">Unrealised P&amp;L</div>
+        <div id="unreal" class="figure">–</div>
+        <div id="unrealSub" class="sub"></div>
+      </div>
+      <div>
+        <div class="label">Realised P&amp;L</div>
+        <div id="realised" class="figure">–</div>
+        <div id="realisedSub" class="sub"></div>
+      </div>
+      <div class="seg" role="group" aria-label="Curve">
+        <button type="button" data-series="equity" aria-pressed="true">Account equity</button>
+        <button type="button" data-series="strategy" aria-pressed="false">Strategy P&amp;L</button>
+      </div>
+    </div>
+    <div id="chart" class="chart"></div>
+    <div id="chartNote" class="note"></div>
+    <details class="data"><summary>Daily values</summary><div id="daily" class="scroll"></div></details>
+    <div id="tiles" class="tiles"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Working orders <span class="muted">limit orders resting on Deribit</span></h2>
+    <div id="orders" class="scroll"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Open spreads <span id="openNote" class="muted"></span></h2>
+    <div id="open" class="scroll"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Positions on Deribit <span class="muted">as the exchange reports them</span></h2>
+    <div id="positions" class="scroll"></div>
+  </section>
+
+  <div id="coins" class="coins"></div>
+
+  <section class="panel">
+    <h2>Finished deals</h2>
+    <div id="deals" class="scroll"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Activity</h2>
+    <div id="log" class="log"></div>
+  </section>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  const fin = (x) => typeof x === 'number' && Number.isFinite(x);
+  const num = (x, d = 0) => (fin(x) ? x.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }) : '–');
+  const money = (x, d = 2) => (fin(x) ? `${x < 0 ? '−' : ''}$${num(Math.abs(x), d)}` : '–');
+  const signed = (x, d = 2) => (fin(x) ? `${x > 0 ? '+' : x < 0 ? '−' : ''}$${num(Math.abs(x), d)}` : '–');
+  const tone = (x) => (fin(x) && x > 0 ? 'pos' : fin(x) && x < 0 ? 'neg' : '');
+  const compact = (v) => {
+    const a = Math.abs(v);
+    const s = v < 0 ? '−' : '';
+    if (a >= 1e6) return `${s}$${+(a / 1e6).toFixed(2)}M`;
+    if (a >= 1e4) return `${s}$${+(a / 1e3).toFixed(1)}K`;
+    return `${s}$${num(a, a < 100 && a % 1 ? 2 : 0)}`;
+  };
+  const expiryDay = (iso) => new Date(`${iso}T08:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+  const when = (t) => new Date(t).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const strike = (k) => num(k, k % 1 ? 1 : 0);
+  const quote = (m, p) => (m === 'SOL' ? `${num(p, 2)} USDC` : `${+Number(p).toFixed(4)} ${m}`);
+  const MODE = { testnet: 'TESTNET · Deribit test account, fake money', live: 'LIVE · real money' };
+  const STATE = { safe: 'Safe', watch: 'Near sold put', breached: 'Below sold put' };
+
+  let S = null;
+  let received = 0;
+  let chartKey = 'equity';
+  let hoverT = null;
+
+  function render() {
+    $('mode').textContent = MODE[S.mode] ?? S.mode;
+    $('mode').className = `mode ${S.mode}`;
+    const w = S.entry;
+    const at = (iso) => new Date(iso).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+    const until = (iso) => new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+    $('window').innerHTML = w.inWindow ? `<b>Entry window open</b> until ${until(w.next.to)} UTC` : w.next ? `Next entry window <b>${at(w.next.from)}–${until(w.next.to)} UTC</b>` : '';
+    $('banners').innerHTML = [
+      ...S.problems.map((p) => `<div class="banner bad">${esc(p)}</div>`),
+      S.accountError ? `<div class="banner bad">${esc(S.accountError)}</div>` : '',
+      S.positionWarning ? `<div class="banner">Positions differ from the bot's records: ${esc(S.positionWarning)}</div>` : '',
+    ].join('');
+    renderPerformance();
+    renderOrders();
+    renderOpen();
+    renderPositions();
+    $('coins').innerHTML = S.markets.map(coinCard).join('');
+    renderDeals();
+    $('log').innerHTML = S.events.length
+      ? S.events.map((e) => `<div class="${e.level}"><span class="muted">${when(e.t)}</span><span>${esc(e.msg)}</span></div>`).join('')
+      : '<div class="empty">Nothing yet.</div>';
+  }
+
+  function tile(label, value, caption = '', cls = '') {
+    return `<div class="tile"><div class="label">${label}</div><div class="value ${cls}">${value}</div>${caption ? `<div class="cap">${caption}</div>` : ''}</div>`;
+  }
+
+  function renderPerformance() {
+    const a = S.account;
+    const e = S.metrics.equity;
+    const d = S.metrics.deals;
+    $('hero').textContent = !S.canTrade ? 'Not connected' : fin(a.equityUsd) ? money(a.equityUsd) : 'Reading…';
+    $('hero').classList.toggle('muted', !S.canTrade || !fin(a.equityUsd));
+    const balances = (a.currencies || []).map((c) => `${num(c.equity, ['BTC', 'ETH'].includes(c.currency) ? 4 : 2)} ${esc(c.currency)}`).join(' · ');
+    $('heroSub').innerHTML = !S.canTrade
+      ? 'Connect the test account to see equity'
+      : `${balances || 'no balances yet'}${fin(e.accountChangeUsd) ? ` · <span class="${tone(e.accountChangeUsd)}">${signed(e.accountChangeUsd)}</span> since ${when(e.since)}` : ''}${a.unpriced?.length ? ` · not valued: ${esc(a.unpriced.join(', '))}` : ''}`;
+    $('unreal').innerHTML = `<span class="${tone(S.totals.unrealizedUsd)}">${signed(S.totals.unrealizedUsd)}</span>`;
+    $('unrealSub').textContent = `${S.totals.open} open · ${money(S.totals.openRiskUsd)} at risk`;
+    $('realised').innerHTML = `<span class="${tone(d.netPnlUsd)}">${signed(d.netPnlUsd)}</span>`;
+    $('realisedSub').textContent = `${d.deals} finished deal${d.deals === 1 ? '' : 's'}`;
+
+    drawChart();
+    $('chartNote').textContent = chartKey === 'equity'
+      ? 'Everything in the account, valued in dollars. It also moves with BTC and ETH prices whenever collateral is held in those coins.'
+      : "Only this bot's deals: realised P&L plus unrealised P&L of open spreads, at Deribit's marks. Sharpe, Sortino and drawdown are measured on this line.";
+
+    const byDay = new Map();
+    for (const p of S.series) byDay.set(new Date(p.t).toISOString().slice(0, 10), p);
+    const days = [...byDay.entries()];
+    $('daily').innerHTML = days.length
+      ? `<table><thead><tr><th>Day (UTC)</th><th class="r">Account equity</th><th class="r">Strategy P&amp;L</th><th class="r">Change that day</th></tr></thead><tbody>${days.map(([k, p], i) => {
+          const change = i ? p.strategyUsd - days[i - 1][1].strategyUsd : NaN;
+          return `<tr><td>${k}</td><td class="r">${money(p.equityUsd)}</td><td class="r ${tone(p.strategyUsd)}">${signed(p.strategyUsd)}</td><td class="r ${tone(change)}">${signed(change)}</td></tr>`;
+        }).reverse().join('')}</tbody></table>`
+      : '<div class="muted">No samples yet.</div>';
+
+    const ready = e.dailyReturns >= 7;
+    const waiting = `needs 7 daily returns (${e.dailyReturns} so far)`;
+    const pf = d.profitFactor === null || d.profitFactor === undefined ? NaN : d.profitFactor;
+    $('tiles').innerHTML = [
+      tile('Deals', num(d.deals), `${d.wins} won · ${d.losses} lost`),
+      tile('Winning deals', num(d.wins), fin(d.avgWinUsd) ? `average ${signed(d.avgWinUsd)}` : ''),
+      tile('Losing deals', num(d.losses), fin(d.avgLossUsd) ? `average ${signed(-d.avgLossUsd)}` : ''),
+      tile('Win rate', fin(d.winRatePct) ? `${num(d.winRatePct, 1)}%` : '–', 'aim: about 80%'),
+      tile('Risk : reward', fin(d.realizedRiskToReward) ? `${num(d.realizedRiskToReward, 2)} : 1` : '–', 'average loss per average win · aim: 2 : 1 or better'),
+      tile('Planned max loss : credit', fin(d.plannedRiskToReward) ? `${num(d.plannedRiskToReward, 2)} : 1` : '–', 'as priced when each spread opened'),
+      tile('Profit factor', d.deals && d.losses === 0 && d.wins > 0 ? '∞' : fin(pf) ? num(pf, 2) : '–', 'gross profit ÷ gross loss'),
+      tile('Expectancy', signed(d.expectancyUsd), fin(d.avgR) ? `per deal · ${num(d.avgR * 100, 1)}% of max loss` : 'per deal', tone(d.expectancyUsd)),
+      tile('Sharpe ratio', ready ? num(e.sharpe, 2) : '–', ready ? `annualised · ${e.dailyReturns} daily returns` : waiting),
+      tile('Sortino ratio', ready ? num(e.sortino, 2) : '–', ready ? 'like Sharpe, but only losing days count as risk' : waiting),
+      tile('Max drawdown', fin(e.maxDrawdownUsd) ? signed(-e.maxDrawdownUsd) : '–', fin(e.maxDrawdownPct) ? `${num(e.maxDrawdownPct, 2)}% from the strategy's peak` : 'on the strategy line', e.maxDrawdownUsd > 0 ? 'neg' : ''),
+      tile('Strategy return', fin(e.strategyReturnPct) ? `${e.strategyReturnPct > 0 ? '+' : ''}${num(e.strategyReturnPct, 2)}%` : '–', fin(e.since) ? `of starting equity, since ${when(e.since)}` : 'since the first sample', tone(e.strategyReturnPct)),
+      tile('Largest win', signed(d.largestWinUsd), '', tone(d.largestWinUsd)),
+      tile('Largest loss', signed(d.largestLossUsd), `longest losing streak: ${d.maxConsecutiveLosses}`, tone(d.largestLossUsd)),
+    ].join('');
+  }
+
+  function niceTicks(lo, hi, count) {
+    if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
+    const raw = (hi - lo) / count;
+    const mag = 10 ** Math.floor(Math.log10(raw));
+    const f = raw / mag;
+    const stepSize = (f >= 7.5 ? 10 : f >= 3.5 ? 5 : f >= 1.5 ? 2 : 1) * mag;
+    const start = Math.floor(lo / stepSize) * stepSize;
+    const end = Math.ceil(hi / stepSize) * stepSize;
+    const ticks = [];
+    for (let v = start; v <= end + stepSize / 2; v += stepSize) ticks.push(+v.toFixed(10));
+    return { lo: start, hi: end, ticks };
+  }
+
+  function drawChart() {
+    const wrap = $('chart');
+    const pts = S.series.map((s) => ({ t: s.t, v: chartKey === 'equity' ? s.equityUsd : s.strategyUsd })).filter((p) => fin(p.v));
+    if (pts.length < 2) {
+      wrap.innerHTML = `<div class="none">${S.canTrade ? 'The curve starts after two equity samples (one per minute).' : 'Connect the Deribit test account to start recording equity.'}</div>`;
+      return;
+    }
+    const W = Math.max(wrap.clientWidth - 16, 320);
+    const H = 280, L = 64, R = 84, T = 14, B = 30;
+    const t0 = pts[0].t, t1 = pts[pts.length - 1].t;
+    let lo = Math.min(...pts.map((p) => p.v));
+    let hi = Math.max(...pts.map((p) => p.v));
+    if (chartKey === 'strategy') { lo = Math.min(lo, 0); hi = Math.max(hi, 0); }
+    const pad = (hi - lo) * 0.08 || Math.abs(hi) * 0.01 || 1;
+    const ny = niceTicks(lo - pad, hi + pad, 4);
+    const x = (t) => L + ((t - t0) / Math.max(t1 - t0, 1)) * (W - L - R);
+    const y = (v) => T + (1 - (v - ny.lo) / (ny.hi - ny.lo)) * (H - T - B);
+    const line = pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`).join('');
+    const floor = chartKey === 'strategy' ? y(0) : H - B;
+    const area = `${line}L${x(t1).toFixed(1)},${floor.toFixed(1)}L${x(t0).toFixed(1)},${floor.toFixed(1)}Z`;
+    const span = t1 - t0;
+    const tickLabel = (t) => new Date(t).toLocaleString('en-GB', span < 2 * 864e5 ? { hour: '2-digit', minute: '2-digit' } : { day: 'numeric', month: 'short' });
+    const tickCount = W > 700 ? 6 : 3;
+    const xTicks = Array.from({ length: tickCount }, (_, i) => t0 + (i * span) / (tickCount - 1));
+    const last = pts[pts.length - 1];
+    const name = chartKey === 'equity' ? 'Account equity' : 'Strategy P&L';
+
+    wrap.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" tabindex="0" aria-label="${name} over time; use the arrow keys to read values">
+      ${ny.ticks.map((v) => `<line class="grid" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text class="tick" x="${L - 8}" y="${y(v)}" text-anchor="end" dominant-baseline="middle">${compact(v)}</text>`).join('')}
+      ${chartKey === 'strategy' ? `<line class="axis" x1="${L}" x2="${W - R}" y1="${y(0)}" y2="${y(0)}"/>` : `<line class="axis" x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}"/>`}
+      ${xTicks.map((t) => `<text class="tick" x="${x(t)}" y="${H - B + 18}" text-anchor="middle">${tickLabel(t)}</text>`).join('')}
+      <path class="area" d="${area}"/>
+      <path class="line" d="${line}"/>
+      <circle class="dot" cx="${x(last.t)}" cy="${y(last.v)}" r="4"/>
+      <text class="endlabel" x="${x(last.t) + 10}" y="${y(last.v)}" dominant-baseline="middle">${compact(last.v)}</text>
+      <g class="hover" visibility="hidden"><line class="cross" y1="${T}" y2="${H - B}"/><circle class="dot" r="4"/></g>
+    </svg><div class="tip" hidden></div>`;
+
+    const svg = wrap.querySelector('svg');
+    const g = svg.querySelector('.hover');
+    const tip = wrap.querySelector('.tip');
+    const nearest = (t) => {
+      let best = 0;
+      for (let i = 1; i < pts.length; i++) if (Math.abs(pts[i].t - t) < Math.abs(pts[best].t - t)) best = i;
+      return best;
+    };
+    const show = (i) => {
+      const p = pts[i];
+      const cx = x(p.t), cy = y(p.v);
+      const scale = svg.getBoundingClientRect().width / W;
+      g.setAttribute('visibility', 'visible');
+      g.querySelector('line').setAttribute('x1', cx);
+      g.querySelector('line').setAttribute('x2', cx);
+      g.querySelector('circle').setAttribute('cx', cx);
+      g.querySelector('circle').setAttribute('cy', cy);
+      tip.hidden = false;
+      tip.innerHTML = `<b>${chartKey === 'strategy' ? signed(p.v) : money(p.v)}</b><span>${new Date(p.t).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>`;
+      const left = cx * scale + 8 + 14;
+      tip.style.left = `${Math.min(left, wrap.clientWidth - tip.offsetWidth - 8)}px`;
+      tip.style.top = `${Math.max(cy - 44, 4)}px`;
+      hoverT = p.t;
+    };
+    const hide = () => { hoverT = null; g.setAttribute('visibility', 'hidden'); tip.hidden = true; };
+    svg.addEventListener('pointermove', (ev) => {
+      const r = svg.getBoundingClientRect();
+      const t = t0 + (((ev.clientX - r.left) / r.width) * W - L) / (W - L - R) * span;
+      show(nearest(t));
+    });
+    svg.addEventListener('pointerleave', hide);
+    svg.addEventListener('blur', hide);
+    svg.addEventListener('focus', () => show(hoverT === null ? pts.length - 1 : nearest(hoverT)));
+    svg.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') return;
+      ev.preventDefault();
+      const i = hoverT === null ? pts.length - 1 : nearest(hoverT);
+      show(Math.max(0, Math.min(pts.length - 1, i + (ev.key === 'ArrowRight' ? 1 : -1))));
+    });
+    if (hoverT !== null) show(nearest(hoverT));
+  }
+
+  function renderOrders() {
+    if (!S.jobs.length) {
+      $('orders').innerHTML = '<div class="empty">No orders working.</div>';
+      return;
+    }
+    $('orders').innerHTML = `<table><thead><tr><th>Coin</th><th>Doing</th><th>Instrument</th><th class="r">Limit price</th><th class="r">Filled</th><th class="r">Time left</th><th></th></tr></thead><tbody>${S.jobs.map((j) => {
+      const o = j.order;
+      const left = Math.max(0, j.deadlineAt - Date.now()) / 60000;
+      return `<tr>
+        <td><b>${j.market}</b></td>
+        <td>${j.kind === 'entry' ? 'Opening' : 'Closing'} · step ${j.step ?? '–'} of 2: ${esc(j.says ?? '')}</td>
+        <td>${esc(j.instrument)}</td>
+        <td class="r">${o ? `${o.side === 'buy' ? 'Buy' : 'Sell'} at ${quote(j.market, o.price)} <span class="muted">${money(o.priceUsd)}</span>` : '<span class="muted">placing…</span>'}</td>
+        <td class="r">${o ? `${o.filled} / ${o.amount}` : ''}</td>
+        <td class="r">${num(left, left < 10 ? 1 : 0)} min</td>
+        <td><button class="act" data-stop="${esc(j.id)}">Stop</button></td>
+      </tr>${j.error ? `<tr><td></td><td colspan="6" class="note-row">${esc(j.error)}</td></tr>` : ''}`;
+    }).join('')}</tbody></table>`;
+  }
+
+  function renderOpen() {
+    const open = S.spreads.filter((s) => ['opening', 'open', 'long-only', 'closing'].includes(s.status));
+    $('openNote').textContent = `${open.length} of ${S.maxOpenSpreads} allowed`;
+    if (!open.length) {
+      $('open').innerHTML = '<div class="empty">No open spreads. Switch a coin on below, or press Enter now.</div>';
+      return;
+    }
+    const busy = new Set(S.jobs.map((j) => j.spreadId));
+    $('open').innerHTML = `<table><thead><tr><th>Coin</th><th>Status</th><th>Expires</th><th>Sold / bought put</th><th class="r">Size</th><th class="r">Credit</th><th class="r">Max loss</th><th class="r">Unrealised P&amp;L</th><th class="r">Price above sold put</th><th class="r">Market odds it stays above</th><th></th></tr></thead><tbody>${open.map((sp) => {
+      const L = sp.live;
+      const chip = sp.status === 'open' && L ? `<span class="chip ${L.state}">${STATE[L.state]}</span>`
+        : sp.status === 'long-only' ? '<span class="chip long-only">Long put only</span>'
+        : `<span class="chip">${sp.status === 'opening' ? 'Opening' : sp.status === 'closing' ? 'Closing' : esc(sp.status)}</span>`;
+      const pnl = L?.unrealizedUsd;
+      return `<tr>
+        <td><b>${sp.market}</b></td>
+        <td>${chip}</td>
+        <td>${expiryDay(sp.expiry)}${L ? ` <span class="muted">${num(Math.max(L.daysLeft, 0), 1)}d</span>` : ''}</td>
+        <td>${strike(sp.shortStrike)} / ${strike(sp.longStrike)}</td>
+        <td class="r">${sp.amount}${sp.spareLong ? ` <span class="muted">+${sp.spareLong} long</span>` : ''}</td>
+        <td class="r">${sp.creditUsd ? money(sp.creditUsd * sp.amount) : '–'}</td>
+        <td class="r">${sp.maxLossUsd ? money(sp.maxLossUsd * sp.amount) : '–'}</td>
+        <td class="r ${tone(pnl)}">${signed(pnl)}${L && fin(L.unrealizedR) ? ` <span class="muted">${L.unrealizedR < 0 ? '−' : '+'}${num(Math.abs(L.unrealizedR * 100))}% of max</span>` : ''}</td>
+        <td class="r">${L ? `${num(L.distancePct, 1)}%` : ''}</td>
+        <td class="r">${L && fin(L.chanceAboveShortPct) ? `${num(L.chanceAboveShortPct)}%` : ''}</td>
+        <td>${S.canTrade && !busy.has(sp.id) && (sp.status === 'open' || sp.status === 'long-only') ? `<button class="act" data-close="${esc(sp.id)}">Close</button>` : ''}</td>
+      </tr>${sp.note ? `<tr><td></td><td colspan="10" class="note-row">${esc(sp.note)}</td></tr>` : ''}`;
+    }).join('')}</tbody></table>`;
+  }
+
+  function renderPositions() {
+    if (!S.canTrade) {
+      $('positions').innerHTML = '<div class="empty">Connect the test account to see its positions.</div>';
+      return;
+    }
+    if (!S.positions.length) {
+      $('positions').innerHTML = '<div class="empty">No option positions on the account.</div>';
+      return;
+    }
+    $('positions').innerHTML = `<table><thead><tr><th>Instrument</th><th class="r">Size</th><th class="r">Average price</th><th class="r">Mark</th><th class="r">Unrealised P&amp;L</th><th class="r">Delta</th></tr></thead><tbody>${S.positions.map((p) => `<tr>
+      <td>${esc(p.instrument)}</td>
+      <td class="r">${p.size > 0 ? '+' : ''}${p.size}</td>
+      <td class="r">${+p.averagePrice.toFixed(4)} <span class="muted">${money(p.averagePriceUsd)}</span></td>
+      <td class="r">${+p.markPrice.toFixed(4)}</td>
+      <td class="r ${tone(p.floatingPnlUsd)}">${signed(p.floatingPnlUsd)}</td>
+      <td class="r">${num(p.delta, 3)}</td>
+    </tr>`).join('')}</tbody></table>`;
+  }
+
+  function coinCard(m) {
+    const st = m.settings;
+    const d = m.id === 'SOL' ? 2 : 0;
+    const p = m.plan;
+    const above = fin(m.sma50) && fin(m.spot) ? m.spot > m.sma50 : null;
+    const days = p ? Math.round((p.expiryMs - Date.now()) / 864e5) : 0;
+    return `<div class="card ${m.tradingOn ? 'on' : ''}">
+      <div class="row">
+        <div><div class="coin">${m.id}</div><div class="figure">${money(m.spot, d)}</div></div>
+        <label class="switch"><input type="checkbox" data-trade="${m.id}" ${m.tradingOn ? 'checked' : ''} aria-label="Trade ${m.id}"> ${m.tradingOn ? 'Trading on' : 'Trading off'}</label>
+      </div>
+      <div class="small soft">${m.tradingOn ? 'The bot starts an entry in the Friday window whenever the rule is met.' : 'Your call: switch on only when you judge the market is in a range or rising.'}</div>
+      ${above === null ? '' : `<div class="small muted">Price is ${above ? 'above' : 'below'} its 50-day average of ${money(m.sma50, d)}</div>`}
+      <div class="plan">
+        <div class="small soft">If it traded now, at mid prices: ~${st.dte}-day expiry, strikes ${+(st.widthPct * 100).toFixed(1)}% apart, max loss at most ${st.maxLossToCredit}× the credit, size ${st.amount} ${m.id}</div>
+        ${p ? `
+          <div>Buy the <b>${strike(p.longStrike)}</b> put, then sell the <b>${strike(p.shortStrike)}</b> put · ${expiryDay(p.expiry)} (${days} days)</div>
+          <div class="kv">
+            <div><span>Collect</span><b>${money(p.creditUsd * st.amount)}</b></div>
+            <div><span>Max loss</span><b>${money(p.maxLossUsd * st.amount)}</b></div>
+            <div><span>Market odds of profit</span><b>${num(p.marketWinPct)}%</b></div>
+          </div>
+          <div class="small muted">Sold put sits ${num(p.distancePct, 1)}% below the price · max loss is ${num(p.lossToCredit, 2)}× the credit</div>`
+        : `<div class="small muted">${esc(m.error ? `Price feed error: ${m.error}` : m.skip ?? 'Loading prices…')}</div>`}
+      </div>
+      <div class="row">
+        <span class="small muted">${m.working ? 'Entry orders working' : m.enteredThisWeek ? 'Entered this week' : ''}</span>
+        <button class="act primary" data-enter="${m.id}" ${S.canTrade && p && !m.working ? '' : 'disabled'}>Enter now</button>
+      </div>
+    </div>`;
+  }
+
+  function renderDeals() {
+    const done = S.spreads.filter((s) => s.status === 'closed' || s.status === 'settled' || s.status === 'cancelled');
+    if (!done.length) {
+      $('deals').innerHTML = '<div class="empty">No finished deals yet.</div>';
+      return;
+    }
+    $('deals').innerHTML = `<table><thead><tr><th>Coin</th><th>Opened</th><th>Finished</th><th>Sold / bought put</th><th class="r">Size</th><th class="r">Credit</th><th class="r">Max loss</th><th class="r">P&amp;L</th><th class="r">% of max loss</th><th>Result</th></tr></thead><tbody>${done.map((sp) => {
+      const risk = sp.openedAmount * sp.maxLossUsd;
+      const r = risk > 0 && fin(sp.pnlUsd) ? sp.pnlUsd / risk : NaN;
+      const result = sp.status === 'cancelled' ? '<span class="chip">Cancelled</span>' : sp.pnlUsd > 0 ? '<span class="chip win">Win</span>' : sp.pnlUsd < 0 ? '<span class="chip loss">Loss</span>' : '<span class="chip">Flat</span>';
+      return `<tr>
+        <td><b>${sp.market}</b></td>
+        <td>${when(sp.openedAt)}</td>
+        <td>${sp.closedAt ? when(sp.closedAt) : '–'}${sp.settlePrice ? ` <span class="muted">settled ${money(sp.settlePrice, sp.market === 'SOL' ? 2 : 0)}</span>` : ''}</td>
+        <td>${strike(sp.shortStrike)} / ${strike(sp.longStrike)}</td>
+        <td class="r">${sp.openedAmount}</td>
+        <td class="r">${sp.creditUsd ? money(sp.creditUsd * sp.openedAmount) : '–'}</td>
+        <td class="r">${risk ? money(risk) : '–'}</td>
+        <td class="r ${tone(sp.pnlUsd)}">${signed(sp.pnlUsd)}</td>
+        <td class="r ${tone(r)}">${fin(r) ? `${r > 0 ? '+' : r < 0 ? '−' : ''}${num(Math.abs(r * 100), 1)}%` : '–'}</td>
+        <td>${result}</td>
+      </tr>`;
+    }).join('')}</tbody></table>`;
+  }
+
+  async function post(path, data) {
+    const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Bot-Dashboard': '1' }, body: JSON.stringify(data) });
+    return res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+  }
+
+  document.addEventListener('change', async (ev) => {
+    const id = ev.target.dataset?.trade;
+    if (!id) return;
+    ev.target.disabled = true;
+    const r = await post('/api/trading', { market: id, on: ev.target.checked });
+    if (r.error) alert(r.error);
+  });
+
+  document.addEventListener('click', async (ev) => {
+    const b = ev.target.closest('button');
+    if (!b || !S) return;
+    if (b.dataset.series) {
+      chartKey = b.dataset.series;
+      hoverT = null;
+      document.querySelectorAll('.seg button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+      renderPerformance();
+      return;
+    }
+    const ex = S.execution;
+    if (b.dataset.enter) {
+      const m = S.markets.find((x) => x.id === b.dataset.enter);
+      if (!m?.plan) return;
+      const ok = confirm(`${MODE[S.mode]}\n\nStart a limit-order entry for ${m.id}?\n1. Limit BUY ${m.settings.amount} ${m.plan.longName} at the mid (up to ${ex.buyLongMinutes} min)\n2. Then limit SELL ${m.plan.shortName} at the mid, never below the ${m.settings.maxLossToCredit}:1 price (up to ${ex.sellShortMinutes} min)`);
+      if (!ok) return;
+      b.disabled = true;
+      const r = await post('/api/enter', { market: m.id });
+      if (r.error || r.result !== 'started') alert(`${m.id}: ${r.result ?? r.error}`);
+    }
+    if (b.dataset.close) {
+      const sp = S.spreads.find((x) => x.id === b.dataset.close);
+      if (!sp) return;
+      const ok = confirm(`${MODE[S.mode]}\n\nClose this ${sp.market} spread with limit orders?\n1. Limit BUY back ${sp.amount} ${sp.shortName} at the mid\n2. Then limit SELL the long puts (${sp.longName}) at the mid\nUp to ${ex.exitLegMinutes} min per leg.`);
+      if (!ok) return;
+      b.disabled = true;
+      const r = await post('/api/close', { id: sp.id });
+      if (r.error) alert(`${sp.market}: ${r.error}`);
+    }
+    if (b.dataset.stop) {
+      const j = S.jobs.find((x) => x.id === b.dataset.stop);
+      if (!j || !confirm(`Stop ${j.kind === 'entry' ? 'opening' : 'closing'} this ${j.market} spread? The resting order is cancelled and anything already filled is kept.`)) return;
+      b.disabled = true;
+      const r = await post('/api/stop', { jobId: j.id });
+      if (r.error) alert(`${j.market}: ${r.error}`);
+    }
+  });
+
+  window.addEventListener('resize', () => { if (S) drawChart(); });
+
+  function connect() {
+    const es = new EventSource('/api/events');
+    es.onmessage = (ev) => { S = JSON.parse(ev.data); received = Date.now(); $('dot').className = 'dot on'; render(); };
+    es.onerror = () => { $('dot').className = 'dot'; $('conn').textContent = 'disconnected, retrying…'; };
+  }
+  setInterval(() => {
+    if (received && $('dot').className === 'dot on') $('conn').textContent = `live · updated ${Math.round((Date.now() - received) / 1000)}s ago`;
+  }, 1000);
+
+  // A saved snapshot (window.__FIXTURE__) renders without a running bot, for design checks.
+  if (window.__FIXTURE__) { S = window.__FIXTURE__; received = Date.now(); $('dot').className = 'dot on'; render(); }
+  else connect();
+</script>
+</body>
+</html>
