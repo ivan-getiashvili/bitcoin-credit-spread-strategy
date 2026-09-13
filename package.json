@@ -1,0 +1,13 @@
+{
+  "name": "bitcoin-credit-spread-strategy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Finds and evaluates defined-risk credit spreads on Bitcoin options.",
+  "type": "module",
+  "engines": { "node": ">=22.6" },
+  "scripts": {
+    "chain": "node --experimental-strip-types scripts/fetch-chain.ts",
+    "spreads": "node --experimental-strip-types scripts/find-spreads.ts",
+    "serve": "python3 -m http.server 4190 --directory _site"
+  }
+}
