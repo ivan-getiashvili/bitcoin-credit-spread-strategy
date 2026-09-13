@@ -48,5 +48,7 @@
    "level": "info",
    "msg": "Bot started on the Deribit test exchange"
   }
- ]
+ ],
+ "lastSkip": {},
+ "retryAt": {}
 }
