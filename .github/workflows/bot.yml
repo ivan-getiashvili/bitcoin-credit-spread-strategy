@@ -1,0 +1,73 @@
+# Runs the put spread bot on GitHub's computers, so trading does not depend on a Mac
+# being awake. Each run is one cycle of `scripts/bot.ts --once`: settle expired spreads,
+# start the day's entry in its window, move working limit orders along, sample the
+# account, save a snapshot for the public dashboard. State lives on the `bot-state`
+# branch between runs. Deribit test keys come from the repository's Actions secrets.
+name: Put spread bot
+
+on:
+  schedule:
+    # Entry window and order work: every 5 minutes, 08:00-10:59 UTC.
+    - cron: '*/5 8-10 * * *'
+    # Settlement, reconciliation and an account sample every 3 hours.
+    - cron: '17 */3 * * *'
+  workflow_dispatch:
+
+# Never two cycles at once: two copies would each place the day's orders.
+concurrency:
+  group: deribit-testnet-bot
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  cycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Restore bot state
+        run: |
+          mkdir -p data
+          if git fetch -q --depth=1 origin bot-state:refs/remotes/origin/bot-state 2>/dev/null; then
+            for f in bot-state-testnet.json equity-testnet.jsonl; do
+              git show "refs/remotes/origin/bot-state:$f" > "data/$f" 2>/dev/null || rm -f "data/$f"
+            done
+          else
+            echo "No saved state yet; starting fresh."
+          fi
+
+      - name: One bot cycle
+        env:
+          DERIBIT_TESTNET_CLIENT_ID: ${{ secrets.DERIBIT_TESTNET_CLIENT_ID }}
+          DERIBIT_TESTNET_CLIENT_SECRET: ${{ secrets.DERIBIT_TESTNET_CLIENT_SECRET }}
+        run: node --experimental-strip-types scripts/bot.ts --once
+
+      - name: Save bot state
+        if: always()
+        run: |
+          set -e
+          [ -f data/bot-state-testnet.json ] || { echo "No state to save."; exit 0; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          dir="$RUNNER_TEMP/state"
+          if git rev-parse -q --verify refs/remotes/origin/bot-state >/dev/null; then
+            git worktree add -q -B bot-state "$dir" refs/remotes/origin/bot-state
+          else
+            git worktree add -q --detach "$dir"
+            git -C "$dir" checkout -q --orphan bot-state
+            git -C "$dir" rm -rfq .
+          fi
+          for f in bot-state-testnet.json equity-testnet.jsonl public-state.json; do
+            [ -f "data/$f" ] && cp "data/$f" "$dir/"
+          done
+          git -C "$dir" add -A
+          if git -C "$dir" diff --cached --quiet; then echo "State unchanged."; exit 0; fi
+          git -C "$dir" commit -qm "Bot state $(date -u +%Y-%m-%dT%H:%MZ)"
+          git -C "$dir" push -q origin bot-state

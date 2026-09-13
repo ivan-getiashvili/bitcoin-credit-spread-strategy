@@ -48,6 +48,11 @@ export interface Broker {
   limitOrder(side: Side, instrument: string, amount: number, price: number, label: string, currency: string): Promise<OrderView>;
   /** Margin Deribit would require to buy or sell `amount` at `price`, in the settlement currency. */
   margins(instrument: string, amount: number, price: number): Promise<{ buy: number; sell: number }>;
+  /**
+   * Portfolio-margin initial margin of the current positions plus `positions` (signed sizes
+   * in the underlying), in the currency's own units. Prices a spread as one position.
+   */
+  simulatePortfolioMargin(currency: string, positions: Record<string, number>): Promise<{ initialMargin: number; maintenanceMargin: number }>;
   /** Move a resting order to a new price, keeping its size. */
   editOrder(order: OrderView, price: number): Promise<OrderView>;
   cancelOrder(orderId: string): Promise<OrderView>;
@@ -194,6 +199,13 @@ export class DeribitBroker implements Broker {
   async margins(instrument: string, amount: number, price: number): Promise<{ buy: number; sell: number }> {
     const r = await this.#call('private/get_margins', { instrument_name: instrument, amount: String(amount), price: String(price) });
     return { buy: Number(r.buy) || 0, sell: Number(r.sell) || 0 };
+  }
+
+  async simulatePortfolioMargin(currency: string, positions: Record<string, number>): Promise<{ initialMargin: number; maintenanceMargin: number }> {
+    const r = await this.#call('private/pme/simulate', { currency, add_positions: 'true', simulated_positions: JSON.stringify(positions) });
+    const m = r?.margins?.[currency.toLowerCase()];
+    if (!m) throw new Error(`Deribit pme/simulate returned no ${currency} margins`);
+    return { initialMargin: Number(m.initial_margin) || 0, maintenanceMargin: Number(m.maintenance_margin) || 0 };
   }
 
   async accounts(): Promise<AccountView[]> {

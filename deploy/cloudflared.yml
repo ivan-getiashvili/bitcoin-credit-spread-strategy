@@ -1,0 +1,16 @@
+# Cloudflare Tunnel: puts both dashboards online without opening any port on the server.
+# Replace <TUNNEL-ID> and <DOMAIN>, save as /etc/cloudflared/config.yml, then
+# `cloudflared service install`.
+tunnel: <TUNNEL-ID>
+credentials-file: /etc/cloudflared/<TUNNEL-ID>.json
+
+ingress:
+  # Public, read-only dashboard: live data, no buttons, no routes that change anything.
+  - hostname: <DOMAIN>
+    service: http://127.0.0.1:4192
+  # Private dashboard with the trade buttons. Before routing this hostname, protect it
+  # with a Cloudflare Access application that allows only Ivan's email, and add
+  # "https://control.<DOMAIN>" to controlOrigins in bot.config.json.
+  - hostname: control.<DOMAIN>
+    service: http://127.0.0.1:4191
+  - service: http_status:404

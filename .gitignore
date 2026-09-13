@@ -13,6 +13,7 @@ data/*.jsonl
 data/*.tmp
 data/*.lock
 data/history/
+data/history-daily/
 !data/.gitkeep
 
 .DS_Store

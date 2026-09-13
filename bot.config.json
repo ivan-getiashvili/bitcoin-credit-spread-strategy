@@ -1,6 +1,8 @@
 {
   "mode": "testnet",
   "port": 4191,
+  "publicPort": 4192,
+  "controlOrigins": [],
   "pollSeconds": 10,
   "chainSeconds": 30,
   "sampleSeconds": 60,
@@ -19,6 +21,6 @@
   "markets": {
     "BTC": { "enabled": true, "minHoursToExpiry": 12 },
     "ETH": { "enabled": false, "minHoursToExpiry": 12 },
-    "SOL": { "enabled": true, "minHoursToExpiry": 12 }
+    "SOL": { "enabled": false, "minHoursToExpiry": 12 }
   }
 }

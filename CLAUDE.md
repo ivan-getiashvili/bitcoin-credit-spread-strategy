@@ -19,7 +19,9 @@ Part of `~/projects/algorithmic-trading-strategies/`.
    one construction with one risk; never size or judge the legs separately.
 4. **Demo account of $100k**, not the ~$10M test balance. The bot uses
    `capitalUsd: 100000` plus its own P&L as the account value.
-5. **Trade by default.** Coins are on unless paused on the dashboard.
+5. **Trade by default.** Coins are on unless paused on the dashboard. SOL was
+   dropped at Ivan's request on 2026-09-13 (paused, `enabled: false`); ETH stays off
+   because the test exchange quotes no ETH_USDC options. BTC is the only coin trading.
 6. **Real exchange, not a simulation:** the Deribit test exchange, with trades
    visible in the account.
 7. **Limit orders only**, entries and exits. Never pay the spread.
@@ -30,6 +32,11 @@ Part of `~/projects/algorithmic-trading-strategies/`.
    - deals, wins, losses, win rate
    - average % gain per deal, return on risk, risk:reward, profit factor
    - Sharpe, Sortino, drawdown
+10. **No disclaimers, no more what-ifs (2026-09-13).** Don't add "research project /
+    backtest negative" notes to public pages, and don't test ideas such as excluding
+    bear markets unless he asks. Build it and see where it goes.
+11. **Not on the Mac.** The bot runs on GitHub Actions (`.github/workflows/bot.yml`,
+    chosen 2026-09-13 over a paid server).
 
 ## Things that produce nonsense if forgotten
 
@@ -45,12 +52,17 @@ is inverse.
 **3. USDC books are filed under currency `USDC`** (BTC_USDC, ETH_USDC, SOL_USDC
 alike).
 
-**4. Standard margin does not net the spread.** The test account is
-`segregated_sm`. It locks collateral for the short put as if it stood alone:
-~$54k to sell 4.8 BTC_USDC puts whose spread can lose $2k. With 100k USDC, only
-one full-size spread fits at a time. The bot never shrinks the size to fit (that
-would change the risk); it skips the trade and says why. Portfolio margin would
-margin the spread as one position; switching is an account setting for Ivan.
+**4. Margin model: the test account is on segregated portfolio margin (`segregated_pm`).**
+Ivan asked for it on 2026-09-13 so the exchange treats the spread as one position.
+- Standard margin (`segregated_sm`, the old setting) locked ~$50-56k for the short
+  put alone on a spread that can lose $2k.
+- Portfolio margin prices the same 4.84 BTC spread at ~$1,984, about its risk.
+- "Segregated" keeps the bot on its own 100,000 USDC. `cross_pm` would pool ~$17M
+  of test coins as collateral.
+- **`private/get_margins` still quotes an order on its own** ($12,294 for that
+  short put under PM). Under PM the bot checks margin with `private/pme/simulate`
+  (account positions + unfilled parts of opening entries + the new spread) instead.
+- The bot never shrinks a size to fit margin; it skips and says why.
 
 ## Deribit USDC options (checked 2026-09-13)
 
@@ -69,8 +81,17 @@ margin the spread as one position; switching is an account setting for Ivan.
 
 ## The bot (scripts/bot.ts, lib/executor.ts)
 
-`npm run bot` trades on the account in `.env` and serves the dashboard at
-http://127.0.0.1:4191 (localhost only).
+`npm run bot` trades on the account in `.env` and serves two dashboards, both on
+localhost only:
+- **Private** at http://127.0.0.1:4191 (`port`), with the trade buttons.
+- **Public, read-only** at http://127.0.0.1:4192 (`publicPort`). It has GET routes
+  only and the page is marked `readOnly`, so it shows no buttons.
+
+Going online is planned through Cloudflare Tunnel, with Cloudflare Access in front
+of the private dashboard; see `deploy/README.md`. Buttons accept requests only from
+localhost and `controlOrigins`. Ivan chose a cloud server and a login-protected
+control page. His preferred domain, putspread.com, is taken (parked on Sedo since
+2010); putspread.net, .io and .app were free on 2026-09-13.
 
 - **Modes:**
   - `testnet` (default): needs `DERIBIT_TESTNET_CLIENT_ID` and
@@ -84,7 +105,10 @@ http://127.0.0.1:4191 (localhost only).
   - units = floor(riskUsd / max loss per unit at mids, to the minimum order size),
     where riskUsd = 2% of the account value.
   - Entry is skipped if the smallest order already exceeds the budget, or if the
-    exchange margin for the short put is more than the free USDC.
+    spread's margin is more than the free USDC. Under portfolio margin, that
+    margin comes from `pme/simulate` of the whole spread; under standard margin,
+    from the short put's `get_margins` quote.
+  - Each coin card shows the margin today's spread needs.
 - **Execution:**
   - Post-only limit order at the mid for the long put, re-pegged every 20s. The
     long has 20 minutes to fill; nothing held if it doesn't.
@@ -122,7 +146,69 @@ Backtest on Deribit's historical tape, 132 Fridays from Mar 2024 to Sep 2026
 - ~80% wins appeared only with hindsight-perfect regime calls, or at ~4:1 risk.
 - Friction was 11-15% of credit on narrow spreads.
 
-The current daily strategy has not been backtested.
+## Daily strategy grid search (2026-09-13, `npm run grid`)
+
+Data: every morning from 8 Mar 2024 to 13 Sep 2026 (920 per coin), taken from the
+coin-settled BTC/ETH dailies and converted to dollars. BTC_USDC barely traded before
+late 2025. `npm run history:daily` caches it; the logic is in `lib/daily-backtest.ts`.
+
+- **Grid:** sold strike 1st-4th below the price × width 1-4 strikes × 1- or 2-day
+  expiry × trade every day or only above the 50-day average. That is 64 settings
+  per coin.
+- **Fills:** each setting is priced at the mid and at bid/ask.
+- **Sizing:** 2% risk per spread; delivery fee only on Friday expiries.
+- **Selection:** best in-sample Sharpe (Mar 2024 - Dec 2025), then judged on 2026.
+- **Verified:** three trades recomputed by hand match exactly.
+
+Results:
+- **The current setting (sell #1, width 1, 1-day, every day) loses:**
+  - BTC: -0.19%/deal in-sample, -0.26%/deal in 2026, profit factor 0.58, 2026
+    drawdown 52%.
+  - ETH: -0.17%/deal in 2026, drawdown 42%.
+- **No setting has a robust edge.**
+  - BTC: 4/64 profitable in-sample at mid (1 at bid/ask); the best were near
+    breakeven.
+  - ETH: 3/64 in-sample, and all 3 lost in 2026; 0 profitable at bid/ask.
+- **Why:** fees are 25% of the gross credit (median $45 of $185 per BTC). Without
+  fees the current BTC setting is about breakeven (PF 1.04). A max loss of ~3× the
+  credit needs ~75% wins to break even; the setting wins 65%.
+
+## Fees and the wider-wing test (2026-09-13, `npm run wing-test [-- --combo-fees]`)
+
+- **Fees, verified via `get_instruments`:** options are maker 0.0003 = taker 0.0003
+  = block 0.0003 of the underlying per leg (~$23 per BTC at $77k), capped at 12.5% of
+  the option price.
+  - Limit orders do not lower fees; they only avoid paying the bid/ask spread.
+- **Combo discount (Deribit support pages):** on a combo with buy and sell legs, the
+  fees of the cheaper direction are waived, so a 2-leg spread pays one leg's fee.
+  - Confirmed for takers. The wording for makers ("rebates are reduced to zero") is
+    unclear; test on the test exchange before relying on it.
+  - Combos fill both legs together, which replaces the buy-first rule's purpose.
+  - **Tested on the test exchange, 2026-09-13:**
+    - `private/create_combo` created `BTC_USDC-PS-18SEP26-77000_70000`. Leg amounts
+      are integer ratios (1), not the trade size, and the combo name is in `id`.
+    - A 0.01 BTC IOC combo sell priced 20 USDC through the legs' own quotes did not
+      fill. The test exchange does not match combos against leg books, and its
+      combo books are empty, so the fee waiver cannot be observed there and the bot
+      cannot trade combos there. Nothing traded and no position was left.
+  - **Real exchange, same day:** there are no BTC_USDC put-spread combo books. The
+    coin-settled `BTC-PS-...` books are quoted two-sided at 15-60 BTC. The discount
+    is usable in practice only on the coin-settled books, which conflicts with
+    Ivan's dollar-options rule.
+- **Wing test** (Ivan's idea: sell the first put below the price, buy 0.65%-10%
+  below, risk 2% or 5%, 1-day BTC):
+  - A wider wing cuts fees from 25% to ~5% of the credit, but max loss : credit
+    rises from 3 to 15. The wins needed to break even rise from 75% to 94%, while
+    wins achieved only rise from 65% to 73.5%.
+  - Every width lost money, at mid and at bid/ask, over the whole period and in 2026.
+  - With combo fees the losses halve but remain (profit factor 0.84 at the current
+    width, 0.99 at 10%).
+  - Wide wings approach zero only because the position gets tiny, not because an
+    edge appears.
+  - Beyond ~5% width, most long-leg prices are modelled with flat volatility, which
+    flatters wide spreads.
+- **5% risk per spread** does not change the edge; it multiplies results by 2.5.
+  The current setting would have lost 99% of the account (93% with combo fees).
 
 ## Hard rules for code
 
@@ -135,8 +221,8 @@ The current daily strategy has not been backtested.
    `test/executor.test.ts` guards this.
 4. **Prices come from the exchange.** Models (`lib/blackscholes.ts`) are only for
    odds and small price shifts.
-5. Keys live only in `.env`. Account settings (margin model, transfers) are
-   changed by Ivan.
+5. Keys live only in `.env`. Account settings (margin model, transfers) change
+   only on Ivan's explicit instruction; he asked for portfolio margin on 2026-09-13.
 
 ## Commands
 

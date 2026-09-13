@@ -222,7 +222,7 @@
   let hoverT = null;
 
   function render() {
-    $('mode').textContent = MODE[S.mode] ?? S.mode;
+    $('mode').textContent = `${MODE[S.mode] ?? S.mode}${S.readOnly ? ' · public, read-only' : ''}`;
     $('mode').className = `mode ${S.mode}`;
     const w = S.entry;
     const until = (iso) => new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
@@ -420,7 +420,7 @@
         <td class="r">${o ? `${o.side === 'buy' ? 'Buy' : 'Sell'} at ${num(o.price, 2)} USDC` : '<span class="muted">placing…</span>'}</td>
         <td class="r">${o ? `${o.filled} / ${o.amount}` : ''}</td>
         <td class="r">${num(left, left < 10 ? 1 : 0)} min</td>
-        <td><button class="act" data-stop="${esc(j.id)}">Stop</button></td>
+        <td>${S.readOnly ? '' : `<button class="act" data-stop="${esc(j.id)}">Stop</button>`}</td>
       </tr>${j.error ? `<tr><td></td><td colspan="6" class="note-row">${esc(j.error)}</td></tr>` : ''}`;
     }).join('')}</tbody></table>`;
   }
@@ -451,7 +451,7 @@
         <td class="r ${tone(pnl)}">${signed(pnl)}${L && fin(L.unrealizedR) ? ` <span class="muted">${L.unrealizedR < 0 ? '−' : '+'}${num(Math.abs(L.unrealizedR * 100))}% of max</span>` : ''}</td>
         <td class="r">${L ? `${num(L.distancePct, 2)}%` : ''}</td>
         <td class="r">${L && fin(L.chanceAboveShortPct) ? `${num(L.chanceAboveShortPct)}%` : ''}</td>
-        <td>${S.canTrade && !busy.has(sp.id) && (sp.status === 'open' || sp.status === 'long-only') ? `<button class="act" data-close="${esc(sp.id)}">Close</button>` : ''}</td>
+        <td>${!S.readOnly && S.canTrade && !busy.has(sp.id) && (sp.status === 'open' || sp.status === 'long-only') ? `<button class="act" data-close="${esc(sp.id)}">Close</button>` : ''}</td>
       </tr>${sp.note ? `<tr><td></td><td colspan="11" class="note-row">${esc(sp.note)}</td></tr>` : ''}`;
     }).join('')}</tbody></table>`;
   }
@@ -485,7 +485,9 @@
     return `<div class="card ${m.tradingOn ? 'on' : ''}">
       <div class="row">
         <div><div class="coin">${m.id}</div><div class="figure">${money(m.spot, d)}</div></div>
-        <label class="switch"><input type="checkbox" data-trade="${m.id}" ${m.tradingOn ? 'checked' : ''} aria-label="Trade ${m.id}"> ${m.tradingOn ? 'Trading on' : 'Paused'}</label>
+        ${S.readOnly
+          ? `<span class="chip ${m.tradingOn ? 'safe' : ''}">${m.tradingOn ? 'Trading on' : 'Paused'}</span>`
+          : `<label class="switch"><input type="checkbox" data-trade="${m.id}" ${m.tradingOn ? 'checked' : ''} aria-label="Trade ${m.id}"> ${m.tradingOn ? 'Trading on' : 'Paused'}</label>`}
       </div>
       <div class="small soft">${m.tradingOn ? `Opens one spread every day between ${w.fromUtc} and ${w.toUtc} UTC.` : `Paused: no new ${m.id} spreads until you switch it back on.`}</div>
       ${above === null ? '' : `<div class="small muted">Price is ${above ? 'above' : 'below'} its 50-day average of ${money(m.sma50, d)}</div>`}
@@ -499,12 +501,13 @@
             <div><span>Max loss</span><b>${sized ? money(p.maxLossUsd * z.amount) : '–'}</b></div>
           </div>
           <div class="small muted">Sold put ${num(p.distancePct, 2)}% below the price · strikes ${money(p.shortStrike - p.longStrike, d)} apart · max loss ${num(p.lossToCredit, 1)}× the credit · market odds of profit ${num(p.marketWinPct)}%</div>
-          ${z && !z.amount ? `<div class="small warn-text">Even the smallest order (${z.minAmount} ${m.id}) would risk more than ${money(z.riskUsd)}.</div>` : ''}`
+          ${z && !z.amount ? `<div class="small warn-text">Even the smallest order (${z.minAmount} ${m.id}) would risk more than ${money(z.riskUsd)}.</div>` : ''}
+          ${sized && fin(z.marginUsd) ? `<div class="small ${z.marginUsd > z.freeMarginUsd ? 'warn-text' : 'muted'}">Margin for this spread: ${money(z.marginUsd, 0)} of ${money(z.freeMarginUsd, 0)} free (${esc(MARGIN[z.marginModel] ?? z.marginModel)})</div>` : ''}`
         : `<div class="small muted">${esc(m.error ? `Price feed error: ${m.error}` : m.skip ?? 'Loading prices…')}</div>`}
       </div>
       <div class="row">
         <span class="small muted">${m.working ? 'Entry orders working' : m.enteredToday ? 'Entered today' : ''}</span>
-        <button class="act primary" data-enter="${m.id}" ${S.canTrade && sized && !m.working ? '' : 'disabled'}>Enter now</button>
+        ${S.readOnly ? '' : `<button class="act primary" data-enter="${m.id}" ${S.canTrade && sized && !m.working ? '' : 'disabled'}>Enter now</button>`}
       </div>
     </div>`;
   }

@@ -29,7 +29,12 @@ import { addEvent, appendSample, loadSamples, loadState, saveState } from '../li
 
 type BotConfig = {
   mode: 'testnet' | 'live';
+  /** Private dashboard with the trade buttons. Keep it behind a login when it is online. */
   port: number;
+  /** Read-only public dashboard: the same live data, no buttons, and no routes that change anything. */
+  publicPort?: number;
+  /** Extra origins allowed to press the buttons, e.g. the private dashboard's https address behind a login. */
+  controlOrigins?: string[];
   /** Order work, positions and account refresh, seconds. */
   pollSeconds: number;
   /** Option chains, plans, settlement and the entry-window check, seconds. */
@@ -69,9 +74,12 @@ const samples = loadSamples(equityFile);
 const save = () => saveState(stateFile, state);
 const problems: string[] = [];
 
-// One bot per account: two copies would each open the day's spreads.
+const ONCE = process.argv.includes('--once');
+
+// One bot per account: two copies would each open the day's spreads. A scheduled
+// run (--once) relies on its GitHub Actions concurrency group instead of this lock.
 const lockFile = `${stateFile}.lock`;
-try {
+if (!ONCE) try {
   const other = Number(readFileSync(lockFile, 'utf8'));
   if (other && other !== process.pid) {
     process.kill(other, 0); // throws if that process is gone, leaving a stale lock
@@ -85,8 +93,10 @@ try {
     process.exit(1);
   }
 }
-mkdirSync(dirname(lockFile), { recursive: true });
-writeFileSync(lockFile, String(process.pid));
+if (!ONCE) {
+  mkdirSync(dirname(lockFile), { recursive: true });
+  writeFileSync(lockFile, String(process.pid));
+}
 process.on('exit', () => {
   try { if (Number(readFileSync(lockFile, 'utf8')) === process.pid) unlinkSync(lockFile); } catch { /* already gone */ }
 });
@@ -109,14 +119,15 @@ if (mode === 'testnet') {
 }
 const base = mode === 'live' ? MAINNET : TESTNET;
 
-type Sizing = { amount: number; riskUsd: number; minAmount: number };
+type Sizing = { amount: number; riskUsd: number; minAmount: number; marginUsd?: number; freeMarginUsd?: number; marginModel?: string };
 type MarketSnap = { spot?: number; sma50?: number; plan?: Plan; skip?: string; error?: string; size?: Sizing };
 const chains: Partial<Record<MarketId, { options: Option[]; spot: number }>> = {};
 const snaps: Record<MarketId, MarketSnap> = { BTC: {}, ETH: {}, SOL: {} };
 const sma: Partial<Record<MarketId, { at: number; value: number }>> = {};
 const specs: Partial<Record<MarketId, { at: number; map: Map<string, InstrumentSpec> }>> = {};
-const lastSkip: Partial<Record<MarketId, string>> = {};
-const retryAt: Partial<Record<MarketId, number>> = {};
+// Kept in the saved state, so scheduled runs remember them from one cycle to the next.
+const lastSkip = (state.lastSkip ??= {});
+const retryAt = (state.retryAt ??= {});
 const jobErrors = new Map<string, string>();
 let positions: PositionView[] = [];
 let accounts: AccountView[] = [];
@@ -129,6 +140,7 @@ let lastChainAt = 0;
 let lastSampleAt = samples.at(-1)?.t ?? 0;
 
 const clients = new Set<ServerResponse>();
+const publicClients = new Set<ServerResponse>();
 
 function log(msg: string, level: 'info' | 'warn' | 'error' = 'info') {
   addEvent(state, msg, level);
@@ -225,10 +237,51 @@ async function refreshMarket(id: MarketId) {
     if (spec && Number.isFinite(account)) {
       const riskUsd = (account * config.riskPerTradePct) / 100;
       size = { amount: sizeFor(planned.plan, riskUsd, spec), riskUsd, minAmount: spec.minAmount };
+      if (size.amount > 0) {
+        try {
+          const m = await marginCheck(id, planned.plan, size.amount);
+          if (m) Object.assign(size, { marginUsd: m.neededUsd, freeMarginUsd: m.freeUsd, marginModel: m.model });
+        } catch { /* shown on the card only; the entry checks again */ }
+      }
     }
   }
   snaps[id] = { spot: chain.spot, sma50: sma[id]?.value, size, ...('plan' in planned ? { plan: planned.plan } : { skip: planned.skip }) };
   return planned;
+}
+
+/**
+ * Collateral a new spread needs, and what is free for it, under the account's margin model.
+ * Entries still opening have not placed all their orders, so their collateral is not locked
+ * yet; it is counted here, or two entries started together would both pass the check.
+ * Returns null until the account has been read.
+ */
+async function marginCheck(id: MarketId, plan: Plan, amount: number): Promise<{ neededUsd: number; freeUsd: number; model: string } | null> {
+  const currency = M[id].currency;
+  const acct = accounts.find((a) => a.currency === currency);
+  if (!broker || !acct) return null;
+  const opening = state.spreads.filter((s) => s.status === 'opening' && M[s.market].currency === currency);
+
+  if (acct.marginModel.endsWith('_pm')) {
+    // Portfolio margin prices the pair as one position: simulate the account with the
+    // unfilled parts of opening entries and this spread added, and take the increase.
+    const add: Record<string, number> = {};
+    const put = (name: string, size: number) => {
+      if (Math.abs(size) > 1e-9) add[name] = r8((add[name] ?? 0) + size);
+    };
+    for (const s of opening) {
+      put(s.shortName, -(s.plannedAmount - s.amount));
+      put(s.longName, s.plannedAmount - s.amount - s.spareLong);
+    }
+    put(plan.shortName, -amount);
+    put(plan.longName, amount);
+    const after = await broker.simulatePortfolioMargin(currency, add);
+    return { neededUsd: Math.max(after.initialMargin - acct.initialMargin, 0), freeUsd: acct.availableFunds, model: acct.marginModel };
+  }
+
+  // Standard margin locks collateral for the short put as if it stood alone.
+  const reserved = sum(opening.map((s) => s.marginUsd ?? 0));
+  const quote = await broker.margins(plan.shortName, amount, plan.shortMid);
+  return { neededUsd: quote.sell, freeUsd: Math.max(acct.availableFunds - reserved, 0), model: acct.marginModel };
 }
 
 async function startEntry(id: MarketId, plan: Plan, how: 'scheduled' | 'manual'): Promise<string> {
@@ -246,16 +299,17 @@ async function startEntry(id: MarketId, plan: Plan, how: 'scheduled' | 'manual')
   const amount = sizeFor(plan, riskUsd, spec);
   if (!amount) return `even the smallest order (${spec.minAmount} ${id}) would risk more than $${riskUsd.toFixed(2)}`;
 
-  // Standard margin locks collateral for the short put as if it stood alone, far above
-  // what the spread can lose. The size stays at the full risk; if the exchange will
-  // not lock enough collateral for it, skip the trade rather than change the risk.
-  const free = accounts.find((a) => a.currency === M[id].currency)?.availableFunds ?? 0;
-  const margin = await broker.margins(plan.shortName, amount, plan.shortMid);
-  if (margin.sell > free) {
-    return `not enough margin: Deribit wants $${Math.round(margin.sell).toLocaleString('en-US')} of collateral for ${amount} ${id} of short puts and $${Math.round(free).toLocaleString('en-US')} is free (standard margin counts the short put alone; portfolio margin would count the spread as one position)`;
+  // The size stays at the full risk; if the exchange will not hold enough collateral
+  // for it, skip the trade rather than change the risk.
+  const margin = await marginCheck(id, plan, amount);
+  if (!margin) return 'the Deribit account has not been read yet';
+  if (margin.neededUsd > margin.freeUsd) {
+    const why = margin.model.endsWith('_sm') ? ' (standard margin counts the short put alone; portfolio margin counts the spread as one position)' : '';
+    return `not enough margin: the spread needs $${Math.round(margin.neededUsd).toLocaleString('en-US')} of collateral and $${Math.round(margin.freeUsd).toLocaleString('en-US')} is free${why}`;
   }
 
   const { spread, job } = openEntry(M[id], plan, amount, riskUsd, account, Date.now());
+  spread.marginUsd = margin.neededUsd;
   state.spreads.push(spread);
   state.jobs.push(job);
   state.lastEntryDay[id] = dayKey();
@@ -458,10 +512,20 @@ function view() {
   };
 }
 
+/** What the public dashboard sees: the same live data, marked read-only so the page shows no buttons. */
+function publicView() {
+  return { ...view(), readOnly: true };
+}
+
 function push() {
-  if (!clients.size) return;
-  const message = `data: ${JSON.stringify(view())}\n\n`;
-  for (const c of clients) c.write(message);
+  if (clients.size) {
+    const message = `data: ${JSON.stringify(view())}\n\n`;
+    for (const c of clients) c.write(message);
+  }
+  if (publicClients.size) {
+    const message = `data: ${JSON.stringify(publicView())}\n\n`;
+    for (const c of publicClients) c.write(message);
+  }
 }
 
 async function readBody(req: IncomingMessage): Promise<any> {
@@ -478,7 +542,7 @@ function reply(res: ServerResponse, status: number, data: unknown) {
   res.end(JSON.stringify(data));
 }
 
-const ORIGINS = new Set([`http://127.0.0.1:${config.port}`, `http://localhost:${config.port}`]);
+const ORIGINS = new Set([`http://127.0.0.1:${config.port}`, `http://localhost:${config.port}`, ...(config.controlOrigins ?? [])]);
 
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://127.0.0.1:${config.port}`);
@@ -549,17 +613,64 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(config.port, '127.0.0.1', () => {
+if (!ONCE) server.listen(config.port, '127.0.0.1', () => {
   console.log(`Put spread bot · ${mode} · dashboard http://127.0.0.1:${config.port}`);
   for (const p of problems) console.warn(p);
 });
 
-log(`Bot started on the Deribit ${mode === 'live' ? 'LIVE' : 'test'} exchange${problems.length ? `, not yet able to trade: ${problems[0]}` : ''}`, problems.length ? 'warn' : 'info');
+// The public dashboard answers GET requests only, so nothing on this port can change
+// the bot or touch the account, whoever reaches it.
+if (config.publicPort && !ONCE) {
+  const publicServer = createServer((req, res) => {
+    const url = new URL(req.url ?? '/', `http://127.0.0.1:${config.publicPort}`);
+    try {
+      if (req.method === 'GET' && url.pathname === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        return res.end(readFileSync('page/index.html'));
+      }
+      if (req.method === 'GET' && url.pathname === '/api/state') return reply(res, 200, publicView());
+      if (req.method === 'GET' && url.pathname === '/api/events') {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
+        res.write(`data: ${JSON.stringify(publicView())}\n\n`);
+        publicClients.add(res);
+        req.on('close', () => publicClients.delete(res));
+        return;
+      }
+      return reply(res, 404, { error: 'not found' });
+    } catch {
+      if (!res.headersSent) reply(res, 500, { error: 'internal error' });
+    }
+  });
+  publicServer.listen(config.publicPort, '127.0.0.1', () => console.log(`Public read-only dashboard http://127.0.0.1:${config.publicPort}`));
+}
+
+if (!ONCE) log(`Bot started on the Deribit ${mode === 'live' ? 'LIVE' : 'test'} exchange${problems.length ? `, not yet able to trade: ${problems[0]}` : ''}`, problems.length ? 'warn' : 'info');
 let ticking = false;
 const loop = async () => {
   if (ticking) return;
   ticking = true;
   try { await tick(); } catch (e) { console.error(e); } finally { ticking = false; }
 };
-loop();
-setInterval(loop, config.pollSeconds * 1000);
+if (ONCE) {
+  // One scheduled cycle (GitHub Actions): read the account first so margin checks work,
+  // then settle, plan and start entries, move working orders along, take an account
+  // sample, save a snapshot for the public dashboard, and exit.
+  try {
+    await refreshAccount();
+    lastChainAt = Date.now();
+    await refreshMarkets();
+    await advanceJobs();
+    await refreshAccount();
+  } catch (e) {
+    console.error(e);
+    process.exitCode = 1;
+  } finally {
+    save();
+    writeFileSync(`${dirname(stateFile)}/public-state.json`, JSON.stringify(publicView()));
+    for (const e of state.events.slice(-5)) console.log(`[event ${e.t}] ${e.msg}`);
+  }
+  process.exit();
+} else {
+  loop();
+  setInterval(loop, config.pollSeconds * 1000);
+}

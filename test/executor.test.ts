@@ -77,6 +77,7 @@ class FakeExchange implements Broker {
     return o ? { ...o } : null;
   }
   async margins() { return { buy: 0, sell: 0 }; }
+  async simulatePortfolioMargin() { return { initialMargin: 0, maintenanceMargin: 0 }; }
   async positions() { return []; }
   async accounts() { return []; }
 

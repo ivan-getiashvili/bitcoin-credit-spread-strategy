@@ -9,6 +9,9 @@
     "chain": "node --experimental-strip-types scripts/fetch-chain.ts",
     "spreads": "node --experimental-strip-types scripts/find-spreads.ts",
     "history": "node --experimental-strip-types scripts/fetch-history.ts",
+    "history:daily": "node --experimental-strip-types scripts/fetch-daily.ts",
+    "grid": "node --experimental-strip-types scripts/grid-search.ts",
+    "wing-test": "node --experimental-strip-types scripts/wing-test.ts",
     "backtest": "node --experimental-strip-types scripts/backtest.ts",
     "bot": "node --experimental-strip-types scripts/bot.ts",
     "test": "node --experimental-strip-types --test test/executor.test.ts test/metrics.test.ts"

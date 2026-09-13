@@ -97,6 +97,8 @@ export type SpreadRecord = {
   accountUsdAtEntry: number;
   /** Smallest credit per unit, quote currency, that keeps the spread's max loss within `riskUsd`. */
   minCreditQuote: number;
+  /** Collateral the exchange quoted for this entry when it started, dollars. */
+  marginUsd?: number;
   /** Open short puts, each covered by a long put. */
   amount: number;
   /** Long puts held beyond the open shorts: not yet sold against, or freed by a buy-back. */

@@ -21,6 +21,10 @@ export type BotState = {
   /** Order work in progress (and recently finished). */
   jobs: Job[];
   events: BotEvent[];
+  /** Last reason logged for not entering, per coin, so it is logged once rather than every cycle. */
+  lastSkip?: Partial<Record<MarketId, string>>;
+  /** Earliest time a coin may retry an entry that filled nothing. */
+  retryAt?: Partial<Record<MarketId, number>>;
 };
 
 export function loadState(file: string, tradingDefaults: Record<MarketId, boolean>): BotState {
