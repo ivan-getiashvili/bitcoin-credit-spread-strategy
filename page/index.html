@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Put Spread Bot</title>
+<title>Crypto Spread</title>
 <style>
   :root {
     color-scheme: light;
@@ -37,8 +37,10 @@
   header { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px;
     padding: 12px 24px; background: var(--surface); border-bottom: 1px solid var(--border); }
   h1 { margin: 0; font-size: 16px; letter-spacing: -0.01em; }
-  .mode { font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 3px 9px; border-radius: 999px; background: var(--warn-wash); color: var(--warn); }
-  .mode.live { background: var(--bad); color: #fff; }
+  .about { font-size: 12px; color: var(--ink-2); max-width: 46em; }
+  /* Shown only when the bot trades real money. */
+  .mode { font-size: 11px; font-weight: 700; letter-spacing: .04em; padding: 3px 9px; border-radius: 999px; background: var(--bad); color: #fff; }
+  .mode[hidden] { display: none; }
   .conn { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-2); }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); }
   .dot.on { background: var(--good); }
@@ -121,16 +123,13 @@
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.act:disabled { opacity: .45; cursor: not-allowed; }
 
-  .log { max-height: 340px; overflow: auto; font-size: 12px; }
-  .log div { display: grid; grid-template-columns: 110px 1fr; gap: 10px; padding: 6px 16px; border-top: 1px solid var(--border); }
-  .log .warn { color: var(--warn); }
-  .log .error { color: var(--bad); }
 </style>
 </head>
 <body>
 <header>
-  <h1>Put Spread Bot</h1>
-  <span id="mode" class="mode">connecting</span>
+  <h1>Crypto Spread</h1>
+  <span id="about" class="about"></span>
+  <span id="mode" class="mode" hidden></span>
   <span class="conn"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
   <span id="window" class="window"></span>
 </header>
@@ -186,11 +185,6 @@
     <h2>Finished deals</h2>
     <div id="deals" class="scroll"></div>
   </section>
-
-  <section class="panel">
-    <h2>Activity</h2>
-    <div id="log" class="log"></div>
-  </section>
 </main>
 <script>
   const $ = (id) => document.getElementById(id);
@@ -222,8 +216,10 @@
   let hoverT = null;
 
   function render() {
-    $('mode').textContent = `${MODE[S.mode] ?? S.mode}${S.readOnly ? ' · public, read-only' : ''}`;
-    $('mode').className = `mode ${S.mode}`;
+    const coins = S.markets.filter((m) => m.settings?.enabled).map((m) => m.id);
+    $('about').textContent = `Every day at ${S.entry.fromUtc} UTC, a bull put spread on ${coins.join(', ') || 'crypto'} options at Deribit: buy the second put below the price, sell the first, on the next daily expiry, and hold to settlement. Each spread risks ${num(S.account.riskPerTradePct, 1)}% of the account.`;
+    $('mode').textContent = MODE[S.mode];
+    $('mode').hidden = S.mode !== 'live';
     const w = S.entry;
     const until = (iso) => new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
     const from = new Date(w.next.from).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
@@ -239,9 +235,6 @@
     renderPositions();
     $('coins').innerHTML = S.markets.map(coinCard).join('');
     renderDeals();
-    $('log').innerHTML = S.events.length
-      ? S.events.map((e) => `<div class="${e.level}"><span class="muted">${when(e.t)}</span><span>${esc(e.msg)}</span></div>`).join('')
-      : '<div class="empty">Nothing yet.</div>';
   }
 
   function tile(label, value, caption = '', cls = '') {

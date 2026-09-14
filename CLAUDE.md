@@ -97,6 +97,25 @@ Part of `~/projects/algorithmic-trading-strategies/`.
     - **Never run `npm run bot`** (the local runner) against the same account while
       the Worker has keys: both would trade.
 
+## Dashboard (page/index.html), Ivan's wishes 2026-09-14
+
+- He likes the layout; it has everything he needs. Don't redesign it.
+- No "testnet / fake money / read-only" badge: the header carries a one-sentence
+  strategy description instead. The red LIVE badge appears only in live mode.
+- No Activity (event log) panel.
+- Title and header: "Crypto Spread", after the domain.
+
+## Test-exchange liquidity (checked 2026-09-14)
+
+- Quotes on the test exchange come and go. At 16:43 UTC none of the next-day BTC,
+  ETH or SOL USDC puts had a bid and an ask; yesterday afternoon BTC did.
+- Daily USDC options do trade there in the 08:00-10:00 UTC entry window: 464 trades
+  today, mostly ETH_USDC (252), then BTC_USDC (21) and SOL_USDC (7). So fills in the
+  window are possible for all three, but never guaranteed. The plan is priced off
+  marks when there is no quote.
+- The real exchange quotes all three dailies both sides near the money (BTC 16/28,
+  ETH 24/37, SOL 5/24 strikes at 16:45 UTC).
+
 ## Things that produce nonsense if forgotten
 
 **1. `underlying_price` is a per-expiry FORWARD, not spot.** Spot is
