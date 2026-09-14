@@ -29,7 +29,7 @@ async function get(path: string, params: Record<string, string> = {}, timeoutMs 
     signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) throw new Error(`Deribit ${path} HTTP ${res.status}`);
-  const json = await res.json();
+  const json: any = await res.json();
   if (json.error) throw new Error(`Deribit ${path}: ${JSON.stringify(json.error).slice(0, 200)}`);
   return json.result;
 }
@@ -66,7 +66,17 @@ export type Option = {
  * forward; `spot` is the settlement index, which is the same for every row.
  */
 export async function getChain(market: Market = MARKETS.BTC, base = MAINNET): Promise<{ options: Option[]; spot: number; fetchedAt: string }> {
-  const rows: any[] = await get('get_book_summary_by_currency', { currency: market.currency, kind: 'option' }, 45_000, base);
+  return chainFromSummaries(await getBookSummaries(market.currency, base), market);
+}
+
+/** Every option book of a settlement currency in one request (~1.4 MB for USDC). Several coins can share one read. */
+export async function getBookSummaries(currency: string, base = MAINNET): Promise<unknown[]> {
+  return get('get_book_summary_by_currency', { currency, kind: 'option' }, 45_000, base);
+}
+
+/** One coin's chain out of a currency's book summaries. */
+export function chainFromSummaries(summaries: unknown[], market: Market): { options: Option[]; spot: number; fetchedAt: string } {
+  const rows = summaries as any[];
   const now = Date.now();
   const options: Option[] = [];
   let spot = 0;
@@ -124,22 +134,34 @@ export type InstrumentSpec = {
   contractSize: number;
 };
 
+function toSpec(r: any): InstrumentSpec {
+  return {
+    name: r.instrument_name,
+    tickSize: Number(r.tick_size),
+    tickSteps: (r.tick_size_steps ?? [])
+      .map((s: any) => ({ above: Number(s.above_price), tick: Number(s.tick_size) }))
+      .sort((a: { above: number }, b: { above: number }) => a.above - b.above),
+    minAmount: Number(r.min_trade_amount),
+    contractSize: Number(r.contract_size),
+  };
+}
+
+/** Every instrument of a coin (the full list is megabytes; prefer getInstrumentSpec). */
 export async function getInstrumentSpecs(market: Market, base = MAINNET): Promise<Map<string, InstrumentSpec>> {
   const rows: any[] = await get('get_instruments', { currency: market.currency, kind: 'option' }, 30_000, base);
   const out = new Map<string, InstrumentSpec>();
   for (const r of rows) {
     if (!parseName(String(r.instrument_name), market.prefix)) continue;
-    out.set(r.instrument_name, {
-      name: r.instrument_name,
-      tickSize: Number(r.tick_size),
-      tickSteps: (r.tick_size_steps ?? [])
-        .map((s: any) => ({ above: Number(s.above_price), tick: Number(s.tick_size) }))
-        .sort((a: { above: number }, b: { above: number }) => a.above - b.above),
-      minAmount: Number(r.min_trade_amount),
-      contractSize: Number(r.contract_size),
-    });
+    out.set(r.instrument_name, toSpec(r));
   }
   return out;
+}
+
+/** One instrument's tick size and minimum order, in a small request. */
+export async function getInstrumentSpec(name: string, base = MAINNET): Promise<InstrumentSpec> {
+  const r = await get('get_instrument', { instrument_name: name }, 20_000, base);
+  if (!r?.instrument_name) throw new Error(`Deribit has no instrument ${name}`);
+  return toSpec(r);
 }
 
 /** Put a price on the instrument's tick grid, rounding down (for buys) or up (for sells). */

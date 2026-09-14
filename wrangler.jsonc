@@ -1,0 +1,29 @@
+{
+  // Cloudflare Workers config for the bot's production home. See worker/index.ts.
+  // Cloudflare builds and deploys this from GitHub on every push to main (Workers Builds),
+  // the same way btcmetrics.online is published.
+  "name": "cryptospread",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-09-01",
+
+  // One bot cycle every minute. Cron times are UTC.
+  "triggers": { "crons": ["* * * * *"] },
+
+  "d1_databases": [
+    { "binding": "DB", "database_name": "cryptospread", "database_id": "0a0fb1b1-c17d-44f0-aa71-c45600e0294a" }
+  ],
+
+  // The dashboard page is bundled into the Worker as text.
+  "rules": [{ "type": "Text", "globs": ["**/*.html"], "fallthrough": true }],
+
+  // Keep invocation logs (CPU time, errors) so problems can be diagnosed from the dashboard or API.
+  "observability": { "enabled": true },
+
+  // The custom domain lives here so a redeploy re-asserts it; Cloudflare creates the DNS
+  // records and certificate. workers.dev stays on as a fallback address.
+  "workers_dev": true,
+  "routes": [
+    { "pattern": "cryptospread.trade", "custom_domain": true },
+    { "pattern": "www.cryptospread.trade", "custom_domain": true }
+  ]
+}

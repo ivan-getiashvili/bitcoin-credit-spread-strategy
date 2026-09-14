@@ -4,7 +4,9 @@
   "private": true,
   "description": "Finds, backtests and evaluates defined-risk put credit spreads on BTC, ETH and SOL options.",
   "type": "module",
-  "engines": { "node": ">=22.6" },
+  "engines": {
+    "node": ">=22.6"
+  },
   "scripts": {
     "chain": "node --experimental-strip-types scripts/fetch-chain.ts",
     "spreads": "node --experimental-strip-types scripts/find-spreads.ts",
@@ -14,7 +16,15 @@
     "wing-test": "node --experimental-strip-types scripts/wing-test.ts",
     "backtest": "node --experimental-strip-types scripts/backtest.ts",
     "bot": "node --experimental-strip-types scripts/bot.ts",
-    "site": "node --experimental-strip-types scripts/build-site.ts",
-    "test": "node --experimental-strip-types --test test/executor.test.ts test/metrics.test.ts"
+    "worker:dev": "wrangler dev --test-scheduled",
+    "worker:bundle": "wrangler deploy --dry-run --outdir dist",
+    "test": "node --experimental-strip-types --test test/executor.test.ts test/metrics.test.ts test/equity-agg.test.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260914.1",
+    "wrangler": "^4.131.2"
+  },
+  "allowScripts": {
+    "workerd@1.20260911.1": true
   }
 }

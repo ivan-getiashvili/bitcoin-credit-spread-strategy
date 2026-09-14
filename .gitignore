@@ -18,3 +18,7 @@ data/history-daily/
 
 .DS_Store
 *.log
+
+# Cloudflare local development
+.wrangler/
+.dev.vars*

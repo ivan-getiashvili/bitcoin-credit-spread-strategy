@@ -1,36 +1,19 @@
 /**
- * The bot's memory: one JSON state file and one equity log per mode
+ * The bot's memory on a computer: one JSON state file and one equity log per mode
  * (data/bot-state-testnet.json, data/equity-testnet.jsonl), so test-exchange
  * history never mixes with real-money history. State is written atomically: a
- * crash mid-write leaves the previous file intact.
+ * crash mid-write leaves the previous file intact. On Cloudflare the same state
+ * lives in D1 instead (worker/index.ts).
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { Job, SpreadRecord } from './executor.ts';
 import type { MarketId } from './markets.ts';
 import type { EquitySample } from './metrics.ts';
-
-export type BotEvent = { t: string; level: 'info' | 'warn' | 'error'; msg: string };
-
-export type BotState = {
-  /** Per coin: trade it. On by default; the dashboard switch pauses a coin. */
-  tradingOn: Record<MarketId, boolean>;
-  /** The UTC date whose entry has already started, per coin. */
-  lastEntryDay: Partial<Record<MarketId, string>>;
-  spreads: SpreadRecord[];
-  /** Order work in progress (and recently finished). */
-  jobs: Job[];
-  events: BotEvent[];
-  /** Last reason logged for not entering, per coin, so it is logged once rather than every cycle. */
-  lastSkip?: Partial<Record<MarketId, string>>;
-  /** Earliest time a coin may retry an entry that filled nothing. */
-  retryAt?: Partial<Record<MarketId, number>>;
-};
+import { emptyState, mergeState, type BotState } from './state.ts';
 
 export function loadState(file: string, tradingDefaults: Record<MarketId, boolean>): BotState {
-  const empty: BotState = { tradingOn: { ...tradingDefaults }, lastEntryDay: {}, spreads: [], jobs: [], events: [] };
-  if (!existsSync(file)) return empty;
-  return { ...empty, ...JSON.parse(readFileSync(file, 'utf8')) };
+  if (!existsSync(file)) return emptyState(tradingDefaults);
+  return mergeState(JSON.parse(readFileSync(file, 'utf8')), tradingDefaults);
 }
 
 export function saveState(file: string, state: BotState): void {
@@ -38,11 +21,6 @@ export function saveState(file: string, state: BotState): void {
   const tmp = `${file}.tmp`;
   writeFileSync(tmp, JSON.stringify(state, null, 1));
   renameSync(tmp, file);
-}
-
-export function addEvent(state: BotState, msg: string, level: BotEvent['level'] = 'info'): void {
-  state.events.push({ t: new Date().toISOString(), level, msg });
-  if (state.events.length > 500) state.events.splice(0, state.events.length - 500);
 }
 
 export function loadSamples(file: string): EquitySample[] {
