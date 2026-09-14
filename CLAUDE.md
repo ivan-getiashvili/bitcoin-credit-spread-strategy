@@ -115,6 +115,24 @@ Part of `~/projects/algorithmic-trading-strategies/`.
 - No Activity (event log) panel.
 - Title and header: "Crypto Spread", after the domain.
 
+## When the dailies trade (`npm run liquidity`, 2026-09-14)
+
+Real exchange, 30 days, BTC/ETH/SOL USDC options expiring within 2 days, 12,382
+trades (BTC 3,071, ETH 3,800, SOL 5,511):
+- **Busiest hours (UTC):** 08 (39.5 trades/day, the settlement hour), 13 (35, US
+  morning), 09 (27), 14 (25), 21 (23). Quietest: 00-07 (8-13/day).
+- **Distance from the mark** (how much takers pay to cross): widest 00-07 UTC
+  (13-24%) and 21-23 (18%), 12% at 08, tightest 09-12 and 15-19 (~9%).
+- **Weekdays:** Thu 606, Wed 538, Fri 487, Sun 451, Mon 344, Tue 239, Sat 223
+  trades/day. Only 4 weeks of data; don't skip days on it.
+- **Reading for our orders:** the bot rests at the mid and needs takers to cross
+  to it. The 08-10 window has the most takers (33/hour) paying the most, which is
+  good for a resting order; 09-11 has tighter spreads, which matters only when the
+  15-minute rule makes us cross. Keep 08:05-10:00 for now; the bot records its
+  own fill times, so revisit after a few weeks of real fills.
+- The test exchange's history only reaches back about two days, and its marks
+  are unreliable, so its "distance from mark" column means nothing there.
+
 ## Test-exchange liquidity (checked 2026-09-14)
 
 - Quotes on the test exchange come and go. At 16:43 UTC none of the next-day BTC,
