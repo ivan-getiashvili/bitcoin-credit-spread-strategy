@@ -6,8 +6,15 @@
   "main": "worker/index.ts",
   "compatibility_date": "2026-09-01",
 
-  // One bot cycle every minute. Cron times are UTC.
+  // One bot cycle every minute. Cron times are UTC. The Scheduler Durable Object's alarm
+  // is a second, independent timer for the same cycle (see worker/index.ts).
   "triggers": { "crons": ["* * * * *"] },
+
+  "durable_objects": {
+    "bindings": [{ "name": "SCHEDULER", "class_name": "Scheduler" }]
+  },
+  // SQLite-backed Durable Objects are the kind available on the Workers Free plan.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Scheduler"] }],
 
   "d1_databases": [
     { "binding": "DB", "database_name": "cryptospread", "database_id": "0a0fb1b1-c17d-44f0-aa71-c45600e0294a" }
@@ -22,6 +29,8 @@
   // The custom domain lives here so a redeploy re-asserts it; Cloudflare creates the DNS
   // records and certificate. workers.dev stays on as a fallback address.
   "workers_dev": true,
+  // No per-version preview links: they would publish unreleased versions at public addresses.
+  "preview_urls": false,
   "routes": [
     { "pattern": "cryptospread.trade", "custom_domain": true },
     { "pattern": "www.cryptospread.trade", "custom_domain": true }

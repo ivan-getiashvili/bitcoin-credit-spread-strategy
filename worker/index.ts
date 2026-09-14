@@ -2,7 +2,11 @@
 /**
  * The bot's production home: a Cloudflare Worker at https://cryptospread.trade.
  *
- * - A cron trigger runs one bot cycle (lib/bot.ts) every minute.
+ * - One bot cycle (lib/bot.ts) runs about once a minute, started by whichever of two
+ *   independent timers fires first: the cron trigger, or the alarm of the `Scheduler`
+ *   Durable Object, which re-arms itself after every run. Two timers, because Cron
+ *   Triggers alone did not fire at all on this account on 2026-09-14. A lease in D1
+ *   lets only one cycle run at a time and keeps cycles about a minute apart.
  * - The same Worker serves the public, read-only dashboard: GET / and GET /api/state.
  *   Nothing reachable from the internet can trade.
  * - Memory lives in the D1 database `cryptospread`: the bot's state, the latest dashboard
@@ -15,6 +19,7 @@
  * - Deribit keys are Worker secrets (DERIBIT_TESTNET_CLIENT_ID, DERIBIT_TESTNET_CLIENT_SECRET),
  *   added by Ivan in the Cloudflare dashboard.
  */
+import { DurableObject } from 'cloudflare:workers';
 import configJson from '../bot.config.json';
 import page from '../page/index.html';
 import { createBot, IDS, type Bot, type BotConfig } from '../lib/bot.ts';
@@ -25,6 +30,7 @@ import { emptyState, mergeState } from '../lib/state.ts';
 
 export interface Env {
   DB: D1Database;
+  SCHEDULER: DurableObjectNamespace<Scheduler>;
   DERIBIT_TESTNET_CLIENT_ID?: string;
   DERIBIT_TESTNET_CLIENT_SECRET?: string;
   DERIBIT_CLIENT_ID?: string;
@@ -36,11 +42,17 @@ const config = configJson as BotConfig;
 const TRADING_DEFAULTS = Object.fromEntries(IDS.map((id) => [id, config.markets[id].enabled])) as Record<MarketId, boolean>;
 /** A cycle that dies without releasing its lease blocks later cycles for at most this long. */
 const LEASE_MS = 5 * 60_000;
+/** After a cycle ends, the next may start this much later, so two timers never double the pace. */
+const MIN_GAP_MS = 40_000;
+/** How often the Durable Object's alarm starts a cycle. */
+const ALARM_EVERY_MS = 60_000;
+/** Dashboard data older than this means the timers may have stopped; a page view restarts the alarm. */
+const STALE_MS = 3 * 60_000;
 
 const PAGE = page.replace('<script>', `<script>window.__SNAPSHOT_URL__ = '/api/state';</script>\n<script>`);
 
 const SCHEMA = [
-  // key 'state': the bot's full state as JSON; 'view': the latest dashboard data; 'lease': stops two cycles overlapping.
+  // key 'state': the bot's full state as JSON; 'view': the latest dashboard data; 'lease': one cycle at a time.
   'CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)',
   // The account value once a minute, kept as a permanent record. The dashboard reads a running summary from the state instead.
   'CREATE TABLE IF NOT EXISTS samples (t INTEGER PRIMARY KEY, equity_usd REAL NOT NULL, strategy_usd REAL NOT NULL)',
@@ -63,7 +75,11 @@ async function kvPut(db: D1Database, key: string, value: string) {
   await db.prepare('INSERT INTO kv (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value').bind(key, value).run();
 }
 
-/** Only one cycle at a time: two would each place the day's orders. */
+/**
+ * Only one cycle at a time: two would each place the day's orders. The lease row holds
+ * the time until which no new cycle may start: the running cycle's deadline, and after
+ * it ends, a short gap.
+ */
 async function acquireLease(db: D1Database, until: string): Promise<boolean> {
   const r = await db
     .prepare("INSERT INTO kv (key, value) VALUES ('lease', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE CAST(kv.value AS INTEGER) < ?2")
@@ -73,7 +89,7 @@ async function acquireLease(db: D1Database, until: string): Promise<boolean> {
 }
 
 async function releaseLease(db: D1Database, until: string) {
-  await db.prepare("UPDATE kv SET value = '0' WHERE key = 'lease' AND value = ?1").bind(until).run();
+  await db.prepare("UPDATE kv SET value = ?1 WHERE key = 'lease' AND value = ?2").bind(String(Date.now() + MIN_GAP_MS), until).run();
 }
 
 function connect(env: Env): { broker: Broker | null; problems: string[] } {
@@ -153,11 +169,11 @@ async function runCommands(db: D1Database, bot: Bot) {
   }
 }
 
-async function runCycle(env: Env) {
+async function runCycle(env: Env, trigger: 'cron' | 'alarm') {
   await ensureSchema(env.DB);
   const until = String(Date.now() + LEASE_MS);
   if (!(await acquireLease(env.DB, until))) {
-    console.warn('The previous cycle is still running; this one is skipped.');
+    console.log(`${trigger}: a cycle is running or has just run; skipped.`);
     return;
   }
   try {
@@ -182,19 +198,45 @@ async function runCycle(env: Env) {
     }
     await store.flush();
     await kvPut(env.DB, 'view', JSON.stringify({ ...bot.publicView(), snapshotAt: Date.now() }));
+    console.log(`${trigger}: cycle done.`);
   } finally {
     await releaseLease(env.DB, until);
   }
 }
 
+/**
+ * The second timer. Its alarm starts a cycle, then sets the next alarm a minute later.
+ * Any call to `ensure` restarts the chain if it has stopped.
+ */
+export class Scheduler extends DurableObject<Env> {
+  async ensure(): Promise<number> {
+    const next = await this.ctx.storage.getAlarm();
+    if (next !== null && next > Date.now() - ALARM_EVERY_MS) return next;
+    const at = Date.now() + 1_000;
+    await this.ctx.storage.setAlarm(at);
+    return at;
+  }
+
+  async alarm(): Promise<void> {
+    try {
+      await runCycle(this.env, 'alarm');
+    } finally {
+      await this.ctx.storage.setAlarm(Date.now() + ALARM_EVERY_MS);
+    }
+  }
+}
+
+const scheduler = (env: Env) => env.SCHEDULER.get(env.SCHEDULER.idFromName('bot'));
+
 const SECURITY_HEADERS = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' };
 
 export default {
-  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
-    await runCycle(env);
+  async scheduled(_controller, env, ctx) {
+    ctx.waitUntil(scheduler(env).ensure());
+    await runCycle(env, 'cron');
   },
 
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return new Response('Method not allowed', { status: 405, headers: { Allow: 'GET, HEAD', ...SECURITY_HEADERS } });
@@ -205,6 +247,9 @@ export default {
     if (url.pathname === '/api/state') {
       await ensureSchema(env.DB);
       const view = await kvGet(env.DB, 'view');
+      // The data is written last in each cycle, so its age shows whether the timers still run.
+      const at = Number(view?.match(/"snapshotAt":(\d+)}$/)?.[1] ?? 0);
+      if (Date.now() - at > STALE_MS) ctx.waitUntil(scheduler(env).ensure());
       return new Response(view ?? JSON.stringify({ error: 'The bot has not completed its first cycle yet.' }), {
         status: view ? 200 : 503,
         headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...SECURITY_HEADERS },

@@ -35,45 +35,60 @@ Part of `~/projects/algorithmic-trading-strategies/`.
 10. **No disclaimers, no more what-ifs (2026-09-13).** Don't add "research project /
     backtest negative" notes to public pages, and don't test ideas such as excluding
     bear markets unless he asks. Build it and see where it goes.
-11. **Not on the Mac.** The bot is moving to **Cloudflare** (Ivan's decision,
-    2026-09-14).
-    - **Order of work:**
-      1. Ivan's changes to the strategy.
-      2. Move to Cloudflare, with a cron schedule.
-      3. Ivan buys the domain.
-      4. Dashboard design and metrics fixes.
-      5. Open the first deal manually, then let cron schedule the next ones.
-    - **Why GitHub Actions was dropped:** scheduled runs were dropped. Only 5 of ~90
-      ran between 13 Sep 17:00 and 14 Sep 10:00 UTC, and none ran in the entry window.
-      GitHub's Actions terms also rule out using Actions "as part of a serverless
-      application".
-    - **Today:** `bot.yml` was disabled on 2026-09-14. No trade was made (the
-      Actions secrets were never added), and the test account is flat at $100,000.
-      Re-enable with `gh workflow enable bot.yml` only if GitHub is chosen again.
-    - **Cloudflare plan:** the free Workers plan allows 10 ms CPU per cron run,
-      which is likely too little to parse the option chain; Workers Paid ($5/month)
-      allows 30 s. Cron runs at most once a minute (UTC).
-    - **The GitHub Actions setup below is kept for reference.**
-    - **Repo:** PUBLIC since 2026-09-13 (Ivan's choice; the full history was scanned
-      clean of keys first), `ivan-getiashvili/bitcoin-credit-spread-strategy`, default
-      branch `main`.
-    - **Schedule:** each run is `scripts/bot.ts --once`, one cycle of about 20s.
-      Runs every 5 min 08:00-10:59 UTC and every 15 min otherwise; Actions minutes
-      are unlimited on public repos. GitHub can start scheduled runs late. The
-      concurrency group stops two cycles from overlapping.
-    - **Dashboard:** GitHub Pages at
-      https://ivan-getiashvili.github.io/bitcoin-credit-spread-strategy/. Each run
-      builds `_site/` with `npm run site` and deploys it. In `__SNAPSHOT_URL__` mode
-      the page reads `public-state.json` every minute and shows how old it is. No
-      custom domain yet: putspread.com is taken; putspread.net, .io and .app were free.
-    - **State:** lives on the `bot-state` branch (`bot-state-testnet.json`,
-      `equity-testnet.jsonl`, and `public-state.json` for the dashboard). That branch
-      is the source of truth; local `data/` on the Mac is stale.
-    - **Keys:** the `DERIBIT_TESTNET_CLIENT_ID` / `_SECRET` Actions secrets, added
-      by Ivan himself with `gh secret set`.
-    - **Mac copy:** stopped on 2026-09-13. Never run `npm run bot` while the
-      workflow is active: two bots on one account double the trades.
-    - **Run one cycle now:** `gh workflow run bot.yml`.
+11. **Runs on Cloudflare at https://cryptospread.trade** (moved 2026-09-14, Ivan's
+    decision). Order of work Ivan set: Cloudflare and domain first (done), then his
+    strategy changes, dashboard design and metrics, then open the first deal
+    manually and let the cron schedule the next ones.
+    - **Worker:** `cryptospread` (`worker/index.ts`, `wrangler.jsonc`) on Ivan's
+      account, also at https://cryptospread.ivan-getiashvili.workers.dev.
+    - **Two timers, one cycle a minute** (`lib/bot.ts`). Each timer can start the
+      same cycle, whichever fires first:
+      - the cron trigger `* * * * *`;
+      - the alarm of the `Scheduler` Durable Object, which re-arms itself a minute
+        after every run.
+      - **Why two:** on 2026-09-14 Cron Triggers did not fire once in 45 minutes,
+        on the whole account. Cloudflare's "Workers Cron Triggers degraded" incident of
+        2026-09-09 was marked resolved, but Workers still showed degraded.
+      - **One at a time:** the D1 `lease` row runs one cycle at a time and keeps them
+        at least 40 s apart. Locally, a cron fired just after an alarm cycle was
+        skipped.
+      - **Self-healing:** a `/api/state` request re-arms the alarm when the data is
+        more than 3 minutes old.
+      The option chain is read every minute in the entry window or while orders work,
+      otherwise every 5 minutes (`idleChainSeconds`).
+    - **Memory:** D1 database `cryptospread` (id `0a0fb1b1-c17d-44f0-aa71-c45600e0294a`):
+      - `kv`: `state` (the whole bot state), `view` (dashboard data), `lease`.
+      - `samples`: the account value once a minute, a permanent record.
+      - `commands`: manual actions.
+      The dashboard metrics come from a running summary in the state (`EquityAgg`),
+      never from reading `samples` back.
+    - **Dashboard:** `GET /` and `GET /api/state` only, read-only; anything else is
+      404, and POST is 405. The page polls `/api/state` every minute.
+    - **Manual actions:** insert a row through the Cloudflare connector's D1 query,
+      e.g. `INSERT INTO commands (kind, payload) VALUES ('enter', '{"market":"BTC"}')`.
+      Kinds: `enter {market}`, `close {id}`, `stop {jobId}`, `trading {market,on}`. The
+      next cycle claims it, runs it and writes `result`. Anything that trades needs
+      Ivan's go-ahead first.
+    - **Deploys:** Workers Builds from GitHub `main`: trigger "Deploy main", build
+      token "cyclebasis build token", `NODE_VERSION=24`. It runs `npm test` then
+      `npx wrangler deploy`. Every push to main redeploys, and a failing test blocks the
+      deploy.
+    - **Keys:** Worker secrets `DERIBIT_TESTNET_CLIENT_ID` and
+      `DERIBIT_TESTNET_CLIENT_SECRET`, added by Ivan in the Cloudflare dashboard. Never
+      set them from here. Without them the bot shows prices and cannot trade.
+    - **Domain:** cryptospread.trade plus www, bought 2026-09-14 through Cloudflare
+      Registrar. It cost $4.18 and renews at $5.18 a year, with auto-renew off and WHOIS
+      privacy on.
+    - **Plan:** Workers Free, which allows 10 ms of CPU per cycle. Reading the ~1.4 MB
+      USDC chain is the heaviest step; if cycles start failing, check CPU time in Workers
+      observability before anything else.
+    - **Repo:** public, `ivan-getiashvili/bitcoin-credit-spread-strategy`, default branch
+      `main`, homepage cryptospread.trade.
+    - **Why not GitHub Actions:** only 5 of ~90 scheduled runs ran on 13-14 Sep, and
+      GitHub's Actions terms rule out running a "serverless application". The workflow,
+      the GitHub Pages copy and the server/tunnel files were removed on 2026-09-14.
+    - **Never run `npm run bot`** (the local runner) against the same account while
+      the Worker has keys: both would trade.
 
 ## Things that produce nonsense if forgotten
 
@@ -116,24 +131,29 @@ Ivan asked for it on 2026-09-13 so the exchange treats the spread as one positio
 - On a daily BTC spread fees are a large share of the credit. For example, $262.50
   and $137.50 mids pay $125 before fees and $85 after.
 
-## The bot (scripts/bot.ts, lib/executor.ts)
+## The bot (lib/bot.ts, lib/executor.ts)
 
-`npm run bot` trades on the account in `.env` and serves two dashboards, both on
-localhost only:
-- **Private** at http://127.0.0.1:4191 (`port`), with the trade buttons.
-- **Public, read-only** at http://127.0.0.1:4192 (`publicPort`). It has GET routes
-  only and the page is marked `readOnly`, so it shows no buttons.
+The code is split so a strategy change happens in one place:
 
-Going online is planned through Cloudflare Tunnel, with Cloudflare Access in front
-of the private dashboard; see `deploy/README.md`. Buttons accept requests only from
-localhost and `controlOrigins`. Ivan chose a cloud server and a login-protected
-control page. His preferred domain, putspread.com, is taken (parked on Sedo since
-2010); putspread.net, .io and .app were free on 2026-09-13.
+- **`lib/bot.ts`** is the whole bot as cycles: planning, sizing, margin, entries,
+  order work, settlement, reconciliation, the dashboard view and commands. It keeps
+  everything a later cycle needs in the state, so every cycle can run in a fresh
+  process. The shape of that state is `lib/state.ts`.
+- **`worker/index.ts`** is production on Cloudflare: cron, D1, the public page.
+- **`scripts/bot.ts`** is the local runner for development (`npm run bot`):
+  - state kept in `data/` files (`lib/store.ts`)
+  - a new cycle every `pollSeconds`
+  - a private dashboard with buttons at http://127.0.0.1:4191
+  - a read-only copy at http://127.0.0.1:4192
+
+  Buttons accept requests only from localhost and `controlOrigins`.
+- **`npm run worker:dev`** runs the Worker locally with a local D1 and the keys from
+  `.env`. `curl localhost:8787/__scheduled` runs one cycle.
 
 - **Modes:**
   - `testnet` (default): needs `DERIBIT_TESTNET_CLIENT_ID` and
-    `DERIBIT_TESTNET_CLIENT_SECRET` in `.env`, which Ivan pastes himself. Never ask
-    for keys in chat.
+    `DERIBIT_TESTNET_CLIENT_SECRET`. On Cloudflare they are Worker secrets; locally
+    they live in `.env`. Ivan enters keys himself. Never ask for keys in chat.
   - `live`: locked unless Ivan sets `DERIBIT_ALLOW_LIVE=real-money`.
 - **Daily entry:** 08:05-10:00 UTC, once per coin per day, on the nearest expiry at
   least `minHoursToExpiry` (12) hours away. If an entry fills nothing, it retries
@@ -158,20 +178,30 @@ control page. His preferred domain, putspread.com, is taken (parked on Sedo sinc
     price.
   - `maxConcessionPct` (default 0) is how far past the mid an order may reach.
 - **Monitoring (`lib/metrics.ts`):**
-  - Account value is sampled every 60s to `data/equity-testnet.jsonl`.
+  - Account value is sampled every 60s: to D1 `samples` on Cloudflare, to
+    `data/equity-testnet.jsonl` locally. The metrics and chart come from the running
+    `EquityAgg` in the state; `test/equity-agg.test.ts` checks it matches the
+    whole-history calculation exactly.
   - Per-deal percentages are measured against the account value at entry.
   - Sharpe, Sortino and drawdown are measured on strategy P&L; Sharpe and Sortino
     show only after 7 daily returns.
   - Deribit positions are reconciled against the bot's records every poll.
 - **Safety:**
-  - Dashboard POSTs need an `X-Bot-Dashboard: 1` header and a local Origin.
+  - The public Worker has no route that trades; manual actions go through D1
+    `commands`.
+  - Local dashboard POSTs need an `X-Bot-Dashboard: 1` header and a local Origin.
   - Order timeouts are resolved by label lookup.
   - A crash mid-placement is recovered through `pendingLabel`.
 - **Verified:**
-  - 20 tests (`npm test`).
+  - 24 tests (`npm test`).
   - 2026-09-13 on the test exchange: authentication, account and positions read,
     and a limit order placed, found by label, moved and cancelled
     (non-filling).
+  - 2026-09-14, local Worker (`wrangler dev`): one cycle took 1.4 s. It read the
+    account (portfolio margin) and planned the next BTC spread, 77,000/77,500,
+    5.16 BTC, $2,046 margin. The page renders read-only and POST returns 405.
+  - 2026-09-14, deployed by Workers Builds: tests passed and cryptospread.trade,
+    www and workers.dev serve the dashboard.
 
 ## Earlier research (weekly 2:1 strategy, market-order fills)
 
@@ -258,14 +288,21 @@ Results:
    `test/executor.test.ts` guards this.
 4. **Prices come from the exchange.** Models (`lib/blackscholes.ts`) are only for
    odds and small price shifts.
-5. Keys live only in `.env`. Account settings (margin model, transfers) change
-   only on Ivan's explicit instruction; he asked for portfolio margin on 2026-09-13.
+5. Keys live only in Worker secrets (Cloudflare) and `.env` (local), both entered by
+   Ivan. Account settings (margin model, transfers) change only on Ivan's explicit
+   instruction; he asked for portfolio margin on 2026-09-13.
+6. **The Worker's CPU budget is small** (10 ms per cycle on Workers Free). Don't
+   add per-cycle work that parses large responses. Reuse `getBookSummaries` once per
+   currency and single-instrument `getInstrumentSpec`, never the full instrument list.
 
 ## Commands
 
 ```
-npm run bot        # trade on the Deribit test account + dashboard at http://127.0.0.1:4191
-npm test           # execution and metrics tests
-npm run backtest   # earlier weekly-strategy backtest (npm run history first)
-npm run spreads    # earlier weekly-strategy live finder
+git push origin main   # deploys to Cloudflare (Workers Builds runs npm test first)
+npm test               # execution, metrics and equity-summary tests
+npm run worker:dev     # the Worker locally; curl localhost:8787/__scheduled runs a cycle
+npm run worker:bundle  # bundle check without deploying (dist/)
+npm run bot            # local runner + dashboards; never alongside the live Worker
+npm run backtest       # earlier weekly-strategy backtest (npm run history first)
+npm run spreads        # earlier weekly-strategy live finder
 ```
