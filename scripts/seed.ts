@@ -6,8 +6,9 @@
  *   npm run history:daily -- --from <start> --markets BTC,ETH   # refresh the price cache
  *   npm run seed -- --to 2026-09-13 --days 8                      # -> data/seed.json
  *
- * Only BTC and ETH have cached history; SOL is left out. Deals are at mid prices with
- * Deribit's fees, sized at riskPerTradePct of capitalUsd with sizingSlackPct, no compounding.
+ * Coins without cached history are left out (fetch SOL with `--markets SOL`). Deals are at
+ * mid prices with Deribit's fees, sized at riskPerTradePct of capitalUsd with sizingSlackPct,
+ * no compounding.
  */
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { prepareMornings, runDaily } from '../lib/daily-backtest.ts';
@@ -30,6 +31,13 @@ const capital: number = config.capitalUsd;
 const riskPct: number = config.riskPerTradePct;
 const slack: number = config.sizingSlackPct ?? 0;
 const MIN_AMOUNT: Record<string, number> = { BTC: 0.01, ETH: 0.1, SOL: 10 };
+/**
+ * Listed strike gap near the money, where known. The backtest infers the grid from the
+ * strikes that traded, and on a thin morning (SOL trades a handful of daily puts) that
+ * can produce a spread the bot would never trade, e.g. 96/92 on a $1 grid. Such days
+ * are left out rather than shown as deals.
+ */
+const GRID: Record<string, number> = { SOL: 1 };
 const MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 const name = (id: string, expiry: string, strike: number) => {
   const d = new Date(`${expiry}T08:00:00Z`);
@@ -39,7 +47,7 @@ const r8 = (x: number) => Math.round(x * 1e8) / 1e8;
 
 const spreads: SpreadRecord[] = [];
 const markets: string[] = [];
-for (const id of ['BTC', 'ETH'] as MarketId[]) {
+for (const id of ['BTC', 'ETH', 'SOL'] as MarketId[]) {
   const dir = `data/history-daily/${id}`;
   let delivery: Record<string, number>;
   try { delivery = JSON.parse(readFileSync(`${dir}/delivery.json`, 'utf8')); } catch { console.log(`${id}: no cached history, skipped`); continue; }
@@ -57,6 +65,7 @@ for (const id of ['BTC', 'ETH'] as MarketId[]) {
   let n = 0;
   for (const t of trades) {
     if (t.expiry < from || t.expiry > to) continue;
+    if (GRID[id] && Math.abs(t.shortStrike - t.longStrike - GRID[id]) > 1e-9) { console.log(`${id} ${t.entry}: ${t.shortStrike}/${t.longStrike} is not on the $${GRID[id]} grid, left out`); continue; }
     const step = MIN_AMOUNT[id];
     const amount = r8(Math.floor((riskUsd * (1 - slack / 100)) / t.maxLossUsd / step + 1e-9) * step);
     if (amount < step) continue;
