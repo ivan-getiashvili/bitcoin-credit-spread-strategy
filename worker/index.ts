@@ -26,6 +26,7 @@ import { createBot, IDS, type Bot, type BotConfig } from '../lib/bot.ts';
 import { DeribitBroker, type Broker } from '../lib/broker.ts';
 import type { MarketId } from '../lib/markets.ts';
 import type { EquitySample } from '../lib/metrics.ts';
+import type { Seed } from '../lib/seed.ts';
 import { emptyState, mergeState } from '../lib/state.ts';
 
 export interface Env {
@@ -179,6 +180,9 @@ async function runCycle(env: Env, trigger: 'cron' | 'alarm') {
   try {
     const store = await openState(env.DB);
     const { broker, problems } = connect(env);
+    // Simulated history (kv 'seed', from scripts/seed.ts) shown until the real record is long enough.
+    const seedRaw = await kvGet(env.DB, 'seed');
+    const seed: Seed | undefined = seedRaw ? JSON.parse(seedRaw) : undefined;
     const bot = createBot({
       config,
       broker,
@@ -187,6 +191,7 @@ async function runCycle(env: Env, trigger: 'cron' | 'alarm') {
       save: store.save,
       onSample: (s) => store.addSample(s),
       logLine: (msg, level) => (level === 'info' ? console.log : console.warn)(msg),
+      seed,
     });
     try {
       await bot.cycle();
@@ -197,6 +202,10 @@ async function runCycle(env: Env, trigger: 'cron' | 'alarm') {
       if (store.state.events.at(-1)?.msg !== msg) bot.log(msg, 'error');
     }
     await store.flush();
+    if (seed && !bot.seedShown()) {
+      await env.DB.prepare("DELETE FROM kv WHERE key = 'seed'").run();
+      bot.log('The simulated history has been dropped: the real record now has enough days for every metric');
+    }
     await kvPut(env.DB, 'view', JSON.stringify({ ...bot.publicView(), snapshotAt: Date.now() }));
     console.log(`${trigger}: cycle done.`);
   } finally {

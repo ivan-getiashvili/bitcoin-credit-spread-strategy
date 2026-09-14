@@ -263,14 +263,15 @@
     $('unreal').innerHTML = `<span class="${tone(S.totals.unrealizedUsd)}">${signed(S.totals.unrealizedUsd)}</span>`;
     $('unrealSub').textContent = `${S.totals.open} open · ${money(S.totals.openRiskUsd)} at risk`;
     $('realised').innerHTML = `<span class="${tone(d.netPnlUsd)}">${signed(d.netPnlUsd)}</span>`;
-    $('realisedSub').textContent = `${d.deals} finished deal${d.deals === 1 ? '' : 's'}`;
+    $('realisedSub').textContent = `${d.deals} finished deal${d.deals === 1 ? '' : 's'}${S.seeded ? ` · ${S.seeded.deals} simulated` : ''}`;
 
     drawChart();
-    $('chartNote').textContent = chartKey === 'strategy'
+    const seedNote = S.seeded ? ` Before ${expiryDay(S.seeded.to)} the line is simulated: the same strategy on real ${S.seeded.markets.join(' and ')} prices for ${S.seeded.days} days, shown until the bot has ${S.seeded.realClosesNeeded - 1} real daily returns (${S.seeded.realCloses} day${S.seeded.realCloses === 1 ? '' : 's'} so far).` : '';
+    $('chartNote').textContent = (chartKey === 'strategy'
       ? "Only this bot's deals: realised P&L plus unrealised P&L of open spreads, at Deribit's marks. Sharpe, Sortino and drawdown are measured on this line."
       : demo
         ? `The demo account: ${money(a.capitalUsd, 0)} starting capital plus this bot's realised and unrealised P&L. Risk per spread and every percentage are measured against it, whatever the test exchange balance is.`
-        : 'Everything in the exchange account, valued in dollars.';
+        : 'Everything in the exchange account, valued in dollars.') + seedNote;
 
     const byDay = new Map();
     for (const p of S.series) byDay.set(new Date(p.t).toISOString().slice(0, 10), p);
@@ -278,7 +279,7 @@
     $('daily').innerHTML = days.length
       ? `<table><thead><tr><th>Day (UTC)</th><th class="r">Account value</th><th class="r">Strategy P&amp;L</th><th class="r">Change that day</th></tr></thead><tbody>${days.map(([k, p], i) => {
           const change = i ? p.strategyUsd - days[i - 1][1].strategyUsd : NaN;
-          return `<tr><td>${k}</td><td class="r">${money(p.equityUsd)}</td><td class="r ${tone(p.strategyUsd)}">${signed(p.strategyUsd)}</td><td class="r ${tone(change)}">${signed(change)}</td></tr>`;
+          return `<tr><td>${k}${S.seeded && k <= S.seeded.to ? ' <span class="chip">simulated</span>' : ''}</td><td class="r">${money(p.equityUsd)}</td><td class="r ${tone(p.strategyUsd)}">${signed(p.strategyUsd)}</td><td class="r ${tone(change)}">${signed(change)}</td></tr>`;
         }).reverse().join('')}</tbody></table>`
       : '<div class="muted">No samples yet.</div>';
 
@@ -295,7 +296,7 @@
       tile('Profit factor', d.deals && d.losses === 0 && d.wins > 0 ? '∞' : fin(d.profitFactor) ? num(d.profitFactor, 2) : '–', 'gross profit ÷ gross loss'),
       tile('Expectancy', signed(d.expectancyUsd), 'average P&L per deal', tone(d.expectancyUsd)),
       tile('Total return', signedPct(e.strategyReturnPct, 2), fin(e.since) ? `since ${when(e.since)}` : 'since the first sample', tone(e.strategyReturnPct)),
-      tile('Sharpe ratio', ready ? num(e.sharpe, 2) : '–', ready ? `annualised · ${e.dailyReturns} daily returns` : waiting),
+      tile('Sharpe ratio', ready ? num(e.sharpe, 2) : '–', ready ? `annualised · ${e.dailyReturns} daily returns${S.seeded ? `, ${S.seeded.days} simulated` : ''}` : waiting),
       tile('Sortino ratio', ready ? num(e.sortino, 2) : '–', ready ? 'like Sharpe, but only losing days count as risk' : waiting),
       tile('Max drawdown', fin(e.maxDrawdownUsd) ? signed(-e.maxDrawdownUsd) : '–', fin(e.maxDrawdownPct) ? `${num(e.maxDrawdownPct, 2)}% from the peak` : 'on the strategy line', e.maxDrawdownUsd > 0 ? 'neg' : ''),
       tile('Best / worst deal', `${signedPct(d.bestDealPct, 2)} / ${signedPct(d.worstDealPct, 2)}`, `longest losing streak: ${d.maxConsecutiveLosses}`),
@@ -518,7 +519,7 @@
       const risk = sp.openedAmount * sp.maxLossUsd;
       const onRisk = risk > 0 && fin(sp.pnlUsd) ? (100 * sp.pnlUsd) / risk : NaN;
       const onAccount = sp.accountUsdAtEntry > 0 && fin(sp.pnlUsd) ? (100 * sp.pnlUsd) / sp.accountUsdAtEntry : NaN;
-      const result = sp.status === 'cancelled' ? '<span class="chip">Cancelled</span>' : sp.status === 'unwound' ? '<span class="chip">Unwound</span>' : sp.pnlUsd > 0 ? '<span class="chip win">Win</span>' : sp.pnlUsd < 0 ? '<span class="chip loss">Loss</span>' : '<span class="chip">Flat</span>';
+      const result = (sp.status === 'cancelled' ? '<span class="chip">Cancelled</span>' : sp.status === 'unwound' ? '<span class="chip">Unwound</span>' : sp.pnlUsd > 0 ? '<span class="chip win">Win</span>' : sp.pnlUsd < 0 ? '<span class="chip loss">Loss</span>' : '<span class="chip">Flat</span>') + (sp.simulated ? ' <span class="chip">simulated</span>' : '');
       return `<tr>
         <td><b>${sp.market}</b></td>
         <td>${when(sp.openedAt)}</td>

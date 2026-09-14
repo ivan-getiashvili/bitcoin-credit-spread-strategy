@@ -107,6 +107,26 @@ Part of `~/projects/algorithmic-trading-strategies/`.
     - **Never run `npm run bot`** (the local runner) against the same account while
       the Worker has keys: both would trade.
 
+## Simulated history in front of the real one (`lib/seed.ts`, 2026-09-14)
+
+Ivan did not want to wait seven days for Sharpe, Sortino and drawdown, so the
+dashboard shows a seed: the current strategy run on real morning prices for the 8
+days before launch, sized like the live bot (1%, 5% slack, mid fills, fees).
+- `npm run seed -- --to 2026-09-13 --days 8` writes `data/seed.json` from the cached
+  daily history (BTC and ETH only; SOL has no cached history). Refresh the cache
+  first with `npm run history:daily`.
+- On Cloudflare the seed is the D1 `kv` row `seed` (uploaded through the
+  connector with a parameterised query); locally it is `data/seed.json`.
+- `withSeed` shifts the seed curve so its last close lands on the real curve's
+  first sample, prepends its 8 daily closes to the stats and the chart, and adds
+  its 14 settled deals (marked `simulated: true`) to the deal stats and the table.
+  The page labels every simulated day and deal and explains it under the chart.
+- **It drops out by itself** once the real record has 8 daily closes (7 returns):
+  `seedActive` turns false, the Worker deletes the row and logs it.
+- Seed result (6-13 Sep): BTC −$2,121 over 8 deals, ETH +$1,428 over 6, total
+  −$693. Friday expiries pay delivery fees, so a full loss there slightly exceeds
+  the budget (−$1,024 on 11 Sep).
+
 ## Dashboard (page/index.html), Ivan's wishes 2026-09-14
 
 - He likes the layout; it has everything he needs. Don't redesign it.
