@@ -23,8 +23,14 @@ Part of `~/projects/algorithmic-trading-strategies/`.
 5. **Trade by default: BTC, ETH and SOL, one spread each, every day.** Ivan
    turned all three on 2026-09-14 to collect deal data (SOL had been dropped the day
    before; ETH had shown no test-exchange quotes, but trades in the morning window).
-   The first deals were started by hand on 2026-09-14 in the evening; from
+   The first deals were started by hand on 2026-09-14 at 16:52 UTC; from
    2026-09-15 the 08:05 UTC schedule takes over.
+   - **First deals (2026-09-14 evening):** SOL 100 × 102/101 puts, credit $23.83,
+     max loss $76.17 (only 100 of 1,310 filled before the price moved). BTC 2.32 ×
+     78,500/78,000, credit $169.88, max loss $990.12; the long filled after 11 min,
+     the short after 5. ETH was refused: the test exchange's ETH marks at that hour
+     were nonsense (a put marked wider than the spread), so it sized at 0. Both
+     spreads expire 2026-09-15 08:00 UTC and are settled by the bot after 08:10.
 6. **Real exchange, not a simulation:** the Deribit test exchange, with trades
    visible in the account.
 7. **Limit orders only**, entries and exits. Never pay the spread.
