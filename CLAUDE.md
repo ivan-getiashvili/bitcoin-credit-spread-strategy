@@ -152,6 +152,10 @@ trades (BTC 3,071, ETH 3,800, SOL 5,511):
   own fill times, so revisit after a few weeks of real fills.
 - The test exchange's history only reaches back about two days, and its marks
   are unreliable, so its "distance from mark" column means nothing there.
+- **test.deribit.com goes down for minutes at a time** (HTTP 502 on every
+  endpoint, 14 Sep 17:38-18:02 UTC, from the Mac as well as from Cloudflare). The
+  bot logs "Could not read the Deribit account", keeps its positions and order
+  records, retries every minute and logs "readable again". Nothing to do.
 
 ## Test-exchange liquidity (checked 2026-09-14)
 

@@ -105,7 +105,9 @@
   .chip.watch, .chip.long-only { background: var(--warn-wash); color: var(--warn); }
   .chip.breached, .chip.loss { background: var(--bad-wash); color: var(--bad); }
 
-  .coins { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 16px; }
+  /* min(330px, 100%): on a narrow phone the cards shrink instead of pushing the whole page wider. */
+  .coins { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(330px, 100%), 1fr)); gap: 16px; }
+  main > * { min-width: 0; }
   .card { display: grid; align-content: start; gap: 10px; padding: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; }
   .card.on { box-shadow: inset 3px 0 0 var(--good); }
   .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
