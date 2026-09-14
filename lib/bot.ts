@@ -166,6 +166,7 @@ export function createBot(d: BotDeps) {
       now,
       save: d.save,
       log,
+      sizingSlackPct: config.sizingSlackPct,
     };
   }
 

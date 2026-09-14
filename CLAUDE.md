@@ -210,6 +210,12 @@ The code is split so a strategy change happens in one place:
   - Post-only limit order at the mid for the long put, re-pegged every 20s (every
     cycle on Cloudflare). The long has `buyLongMinutes` (15) at the mid; nothing is
     held if it doesn't fill.
+  - **If prices move against the entry while buying, the plan is cut to what the
+    budget allows at the new prices and the buy carries on** (`resizeToBudget`).
+    Before 2026-09-14 it stopped instead: the first SOL deal filled 100 of 1,310,
+    the put rose from 0.20 to 0.30, and the bot sold shorts against the 100 only, a
+    $76 deal on a $1,000 budget. Ivan wants each deal to risk about the full 1%. The
+    budget is still a ceiling, never a target: the resized plan is always smaller.
   - The short put is offered for exactly the filled amount, never below
     `long cost + fees + (width - riskUsd/amount)`, so the whole spread stays
     within its budget. It has `sellShortMinutes` (15).

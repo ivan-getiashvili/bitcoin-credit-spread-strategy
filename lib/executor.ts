@@ -168,6 +168,8 @@ export type JobContext = {
   now: () => number;
   save: () => void;
   log: (msg: string, level?: 'info' | 'warn' | 'error') => void;
+  /** Sizing headroom under the risk budget, percent (see BotConfig.sizingSlackPct). */
+  sizingSlackPct?: number;
 };
 
 const inverse = (m: Market) => m.settlement === 'inverse';
@@ -348,8 +350,18 @@ async function targetPrice(job: Job, spread: SpreadRecord, ctx: JobContext): Pro
     // Pay at most what still leaves the minimum credit if the short sells at its mid.
     const s = await ctx.book(spread.shortName);
     const shortMid = midOf(s.bids[0]?.[0], s.asks[0]?.[0], s.mark);
-    const longMax = shortMid - feeQuote(m, shortMid, index) - feeQuote(m, mid, index) - spread.minCreditQuote;
-    if (longMax < toTick(mid, spec, 'down') - EPS) return null;
+    const fees = feeQuote(m, shortMid, index) + feeQuote(m, mid, index);
+    let longMax = shortMid - fees - spread.minCreditQuote;
+    if (longMax < toTick(mid, spec, 'down') - EPS) {
+      // Prices moved against the entry since it was sized: the planned size no longer fits
+      // the budget. Cut the plan to what the budget allows at today's prices and carry on,
+      // rather than stop at whatever happened to fill. The budget itself never changes.
+      const resized = resizeToBudget(spread, shortMid - mid - fees, spec, ctx);
+      if (resized === null) return null;
+      ctx.log(`${spread.market}: prices moved; the spread now fits ${resized} instead of the planned size within the $${spread.riskUsd.toFixed(2)} budget`, 'warn');
+      longMax = shortMid - fees - spread.minCreditQuote;
+      if (longMax < toTick(mid, spec, 'down') - EPS) return null;
+    }
     price = Math.min(price, longMax);
   }
   if (job.phase === 'sell-short') {
@@ -360,6 +372,29 @@ async function targetPrice(job: Job, spread: SpreadRecord, ctx: JobContext): Pro
   }
   const ticked = toTick(price, spec, buying ? 'down' : 'up');
   return ticked > 0 ? ticked : null;
+}
+
+/**
+ * Shrink the planned size to what the risk budget allows at a credit of `creditQuote` per
+ * unit (after fees), keeping what is already bought. Returns the new planned size, or null
+ * if even the size already bought no longer fits, in which case nothing more is bought.
+ */
+function resizeToBudget(spread: SpreadRecord, creditQuote: number, spec: InstrumentSpec, ctx: JobContext): number | null {
+  const m = ctx.market;
+  // A spread that collects nothing is not the strategy at any size.
+  if (!(creditQuote > 0)) return null;
+  const width = spread.shortStrike - spread.longStrike;
+  const maxLossUsd = inverse(m) ? width - creditQuote * spread.longStrike : width - creditQuote;
+  if (!(maxLossUsd > 0)) return null;
+  const step = spec.minAmount;
+  const budget = spread.riskUsd * (1 - Math.min(Math.max(ctx.sizingSlackPct ?? 0, 0), 50) / 100);
+  const units = r8(Math.floor(budget / maxLossUsd / step + 1e-9) * step);
+  const bought = r8(spread.spareLong + spread.amount);
+  if (units < step || units <= bought + EPS || units >= spread.plannedAmount - EPS) return null;
+  spread.plannedAmount = units;
+  const budgetPerUnit = spread.riskUsd / units;
+  spread.minCreditQuote = Math.max(0, inverse(m) ? (width - budgetPerUnit) / spread.longStrike : width - budgetPerUnit);
+  return units;
 }
 
 /** Book whatever filled since the order was last seen against the spread's holdings and cash. */
@@ -500,6 +535,13 @@ async function step(job: Job, spread: SpreadRecord, ctx: JobContext): Promise<vo
         job.order = undefined;
         return finishPhase(job, spread, ctx, `${budget} can no longer be met at mid prices`);
       }
+      // The plan was cut to fit the budget: the resting order is too big now, so replace it.
+      if (Math.abs(phaseAmount(job, spread) - r8(o.amount - o.filled)) > EPS) {
+        o = await ctx.broker.cancelOrder(o.orderId);
+        applyFill(job, spread, o, ctx);
+        job.order = undefined;
+        return;
+      }
       if (Math.abs(price - o.price) > EPS) {
         o = await ctx.broker.editOrder(o, price);
         applyFill(job, spread, o, ctx);
@@ -535,6 +577,9 @@ async function step(job: Job, spread: SpreadRecord, ctx: JobContext): Promise<vo
   if (now - job.phaseStartedAt >= limitMs) return finishPhase(job, spread, ctx, `not filled within ${Math.round(limitMs / 60_000)} minutes`, true);
   const price = await targetPrice(job, spread, ctx);
   if (price === null) return finishPhase(job, spread, ctx, `no price keeps the spread within ${budget} at mid prices`);
+  // Pricing may have cut the plan to fit the budget, so size the order after it.
+  const orderAmount = phaseAmount(job, spread);
+  if (orderAmount <= EPS) return finishPhase(job, spread, ctx, 'filled');
 
   const leg = LEG[job.phase];
   job.seq += 1;
@@ -542,11 +587,11 @@ async function step(job: Job, spread: SpreadRecord, ctx: JobContext): Promise<vo
   job.pendingLabel = label;
   ctx.save();
   // A taking order must be allowed to take liquidity; every other order only makes it.
-  const placed = await ctx.broker.limitOrder(leg.side, instrumentOf(job, spread), amount, price, label, ctx.market.currency, { postOnly: !job.taking });
+  const placed = await ctx.broker.limitOrder(leg.side, instrumentOf(job, spread), orderAmount, price, label, ctx.market.currency, { postOnly: !job.taking });
   job.pendingLabel = undefined;
   job.order = { ...placed, filled: 0, avgPrice: 0, repricedAt: now };
   const says = unwinding(job) ? 'selling the long puts back' : leg.says;
-  ctx.log(`${spread.market}: ${says}${job.taking ? ` at the ${leg.side === 'buy' ? 'ask' : 'bid'}` : ''}: limit ${placed.side} ${amount} ${placed.instrument} at ${px(placed.price)}`);
+  ctx.log(`${spread.market}: ${says}${job.taking ? ` at the ${leg.side === 'buy' ? 'ask' : 'bid'}` : ''}: limit ${placed.side} ${orderAmount} ${placed.instrument} at ${px(placed.price)}`);
   applyFill(job, spread, placed, ctx);
   if (isFinished(placed)) {
     job.order = undefined;
@@ -556,12 +601,11 @@ async function step(job: Job, spread: SpreadRecord, ctx: JobContext): Promise<vo
 
 /** Advance a job as far as it can go now: check its order, move it, or place the next leg's order. */
 export async function advanceJob(job: Job, spread: SpreadRecord, ctx: JobContext): Promise<void> {
-  // A finished phase (or a switch to taking) hands over straight away, so the next order goes out in the same step.
-  for (let i = 0; i < 4 && job.phase !== 'done'; i++) {
-    const phase = job.phase;
-    const taking = job.taking;
+  // Always one step; then keep stepping while there is no resting order, so a finished phase,
+  // a switch to taking or a replaced order sends the next order out in the same call.
+  for (let i = 0; i < 4; i++) {
     await step(job, spread, ctx);
-    if ((job.phase === phase && job.taking === taking) || job.order) break;
+    if (job.phase === 'done' || job.order) break;
   }
 }
 

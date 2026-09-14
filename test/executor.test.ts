@@ -173,14 +173,56 @@ test('never offers the short put below the price that keeps max loss within the 
   assert.equal(ex.sent.at(-1), `sell 4.81 ${SHORT} @ 260`);
 });
 
-test('buys nothing when the risk budget cannot be met at mid prices', async () => {
+test('when the planned size no longer fits the budget at mid prices, a smaller spread that fits is bought instead', async () => {
   const b = books();
+  // Short put mid 210 instead of 262.5: the spread collects $32.28 after fees, so $2,000 buys 4.27, not 4.81.
   b[SHORT] = { bids: [[200, 50]], asks: [[220, 50]], mark: 210, index: INDEX };
+  const { ex, step, spread } = setup(b);
+  await step();
+  assert.deepEqual(ex.sent, [`buy 4.27 ${LONG} @ 135`]);
+  assert.equal(spread.plannedAmount, 4.27);
+});
+
+test('buys nothing when no size of the spread collects a credit at mid prices', async () => {
+  const b = books();
+  // Short put mid 150: after fees the long put costs more than the short put brings in.
+  b[SHORT] = { bids: [[140, 50]], asks: [[160, 50]], mark: 150, index: INDEX };
   const { ex, step, spread, job } = setup(b);
   await step();
   assert.deepEqual(ex.sent, []);
   assert.equal(spread.status, 'cancelled');
   assert.equal(job.phase, 'done');
+});
+
+test('when prices move against the entry, the plan is cut to what the budget still allows and the buy carries on', async () => {
+  const { ex, step, spread } = setup();
+  await step();
+  ex.fill(LONG, 1);
+  // The long put gets dearer: mid 160 instead of 137.5. At that price the spread collects
+  // $59.47 after fees and can lose $440.53 per BTC, so $2,000 now buys 4.53, not 4.81.
+  ex.books[LONG] = { bids: [[150, 50]], asks: [[170, 50]], mark: 160, index: INDEX };
+  await step(25);
+  assert.deepEqual(ex.sent.slice(-2), [`cancel ${LONG}`, `buy 3.53 ${LONG} @ 160`]);
+  assert.equal(spread.plannedAmount, 4.53);
+  ex.fill(LONG);
+  await step(5);
+  assert.equal(ex.sent.at(-1), `sell 4.53 ${SHORT} @ 265`);
+  ex.fill(SHORT);
+  await step(5);
+  assert.equal(spread.status, 'open');
+  assert.equal(spread.amount, 4.53);
+  assert.ok(spread.amount * spread.maxLossUsd <= spread.riskUsd, `risk ${spread.amount * spread.maxLossUsd}`);
+});
+
+test('if prices move so far that even what was bought no longer fits, nothing more is bought', async () => {
+  const { ex, step, spread } = setup();
+  await step();
+  ex.fill(LONG, 3);
+  // Long put at 240: the spread would collect nothing, so the 3 already bought are the whole deal.
+  ex.books[LONG] = { bids: [[230, 50]], asks: [[250, 50]], mark: 240, index: INDEX };
+  await step(25);
+  assert.deepEqual(ex.sent.slice(-2), [`cancel ${LONG}`, `sell 3 ${SHORT} @ 265`]);
+  assert.equal(spread.plannedAmount, 4.81);
 });
 
 test('a long put not filled at the mid in time is re-placed at the ask as a taker, still within the budget', async () => {
