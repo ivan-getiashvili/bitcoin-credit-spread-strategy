@@ -15,9 +15,11 @@
   "execution": {
     "repriceSeconds": 20,
     "maxConcessionPct": 0,
-    "buyLongMinutes": 20,
-    "sellShortMinutes": 60,
-    "exitLegMinutes": 30
+    "buyLongMinutes": 15,
+    "sellShortMinutes": 15,
+    "exitLegMinutes": 15,
+    "takeMinutes": 15,
+    "unwindMinutes": 15
   },
   "markets": {
     "BTC": { "enabled": true, "minHoursToExpiry": 12 },

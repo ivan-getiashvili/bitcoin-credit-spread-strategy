@@ -23,7 +23,8 @@ const INDEX = 76764;
 const FEE_CAP = 0.0003 * INDEX; // $23.0292 per BTC per leg, unless 12.5% of the price is lower
 // BTC_USDC on Deribit: 5 USDC tick (20 above 1,000), 0.01 BTC minimum order.
 const SPEC: InstrumentSpec = { name: 'test', tickSize: 5, tickSteps: [{ above: 1000, tick: 20 }], minAmount: 0.01, contractSize: 1 };
-const exec: ExecSettings = { repriceSeconds: 20, maxConcessionPct: 0, buyLongMinutes: 20, sellShortMinutes: 60, exitLegMinutes: 30 };
+// Every leg: 15 minutes at the mid, then 15 at the other side of the book; an unsold short put unwinds the long puts.
+const exec: ExecSettings = { repriceSeconds: 20, maxConcessionPct: 0, buyLongMinutes: 15, sellShortMinutes: 15, exitLegMinutes: 15, takeMinutes: 15, unwindMinutes: 15 };
 
 // Mids: short put $262.50, long put $137.50, strikes $500 apart. After fees the
 // spread collects $84.78 per BTC and can lose $415.22, so $2,000 of risk buys 4.81 BTC.
@@ -51,10 +52,10 @@ class FakeExchange implements Broker {
     this.books = b;
   }
 
-  async limitOrder(side: Side, instrument: string, amount: number, price: number, label: string): Promise<OrderView> {
+  async limitOrder(side: Side, instrument: string, amount: number, price: number, label: string, _currency: string, opts: { postOnly?: boolean } = {}): Promise<OrderView> {
     const o: OrderView = { orderId: `o${this.orders.length + 1}`, instrument, side, price, amount, filled: 0, avgPrice: 0, state: 'open', label };
     this.orders.push(o);
-    this.sent.push(`${side} ${amount} ${instrument} @ ${price}`);
+    this.sent.push(`${side} ${amount} ${instrument} @ ${price}${opts.postOnly === false ? ' (taker)' : ''}`);
     return { ...o };
   }
   async editOrder(order: OrderView, price: number): Promise<OrderView> {
@@ -182,32 +183,105 @@ test('buys nothing when the risk budget cannot be met at mid prices', async () =
   assert.equal(job.phase, 'done');
 });
 
-test('a long put that never fills is cancelled at its time limit, and no short is offered', async () => {
-  const { ex, step, spread } = setup();
+test('a long put not filled at the mid in time is re-placed at the ask as a taker, still within the budget', async () => {
+  const { ex, step, spread, job } = setup();
   await step();
-  await step(20 * 60);
-  assert.deepEqual(ex.sent, [`buy 4.81 ${LONG} @ 135`, `cancel ${LONG}`]);
+  await step(15 * 60);
+  // The ask is 150, but paying more than 136.5 would leave too little credit if the short sells at its mid, so it rests at 135.
+  assert.deepEqual(ex.sent, [`buy 4.81 ${LONG} @ 135`, `cancel ${LONG}`, `buy 4.81 ${LONG} @ 135 (taker)`]);
+  assert.equal(job.taking, true);
+  await step(15 * 60);
+  assert.equal(ex.sent.at(-1), `cancel ${LONG}`);
   assert.equal(spread.status, 'cancelled');
+  assert.equal(job.phase, 'done');
 });
 
-test('a partly filled long put at its time limit: short puts are offered for only that many', async () => {
+test('a partly filled long put at its time limit: the rest is tried at the ask, then short puts are offered for what was bought', async () => {
   const { ex, step } = setup();
   await step();
   ex.fill(LONG, 2.4);
-  await step(20 * 60);
-  assert.deepEqual(ex.sent, [`buy 4.81 ${LONG} @ 135`, `cancel ${LONG}`, `sell 2.4 ${SHORT} @ 265`]);
+  await step(15 * 60);
+  assert.deepEqual(ex.sent, [`buy 4.81 ${LONG} @ 135`, `cancel ${LONG}`, `buy 2.41 ${LONG} @ 135 (taker)`]);
+  await step(15 * 60);
+  assert.deepEqual(ex.sent.slice(-2), [`cancel ${LONG}`, `sell 2.4 ${SHORT} @ 265`]);
 });
 
-test('a short put that does not fill in time leaves only the long put', async () => {
+test('a short put not sold at the mid in time is re-placed at the bid, but never below the budget floor', async () => {
+  const { ex, step, job } = setup();
+  await step();
+  ex.fill(LONG);
+  await step(5);
+  await step(15 * 60);
+  // The bid is 245, but the long cost 135 plus fees plus the minimum credit needs 260, so it rests there as a taker order.
+  assert.deepEqual(ex.sent.slice(-2), [`cancel ${SHORT}`, `sell 4.81 ${SHORT} @ 260 (taker)`]);
+  assert.equal(job.phase, 'sell-short');
+  assert.equal(job.taking, true);
+});
+
+test('a short put that never sells: the long puts are sold back at the mid, and the entry ends unwound', async () => {
+  const { ex, step, spread, job } = setup();
+  await step();
+  ex.fill(LONG);
+  await step(5);
+  await step(15 * 60); // mid
+  await step(15 * 60); // bid
+  // The short offer is cancelled and the long puts go back on offer at the mid, post-only, in the same step.
+  assert.deepEqual(ex.sent.slice(-2), [`cancel ${SHORT}`, `sell 4.81 ${LONG} @ 140`]);
+  assert.equal(job.phase, 'sell-long');
+  assert.equal(job.taking, false);
+  ex.fill(LONG);
+  await step(5);
+  assert.equal(spread.status, 'unwound');
+  assert.equal(spread.spareLong, 0);
+  assert.equal(spread.amount, 0);
+  // Bought at 135, sold at 140, two fees (12.5% of each price, below the $23 cap): the only money that moved.
+  const expected = 4.81 * (140 - 135 - 135 * 0.125 - 140 * 0.125);
+  assert.ok(Math.abs(spread.pnlUsd! - expected) < 0.01, `pnl ${spread.pnlUsd} vs ${expected}`);
+  assert.equal(job.phase, 'done');
+});
+
+test('if the sell-back at the mid does not fill either, the long puts are sold at the bid as a taker', async () => {
   const { ex, step, spread } = setup();
   await step();
   ex.fill(LONG);
   await step(5);
-  await step(60 * 60);
+  await step(15 * 60); // short at the mid times out
+  await step(15 * 60); // short at the bid times out; long puts offered back at the mid
+  await step(15 * 60); // the mid did not fill either
+  assert.deepEqual(ex.sent.slice(-2), [`cancel ${LONG}`, `sell 4.81 ${LONG} @ 125 (taker)`]);
+  ex.fill(LONG);
+  await step(5);
+  assert.equal(spread.status, 'unwound');
+});
+
+test('a short put that fills only partly: the spread opens for that part and the spare long puts are sold back', async () => {
+  const { ex, step, spread } = setup();
+  await step();
+  ex.fill(LONG);
+  await step(5);
+  ex.fill(SHORT, 2);
+  await step(15 * 60); // the remaining 2.81 go to the bid (floor 260)
+  assert.equal(ex.sent.at(-1), `sell 2.81 ${SHORT} @ 260 (taker)`);
+  await step(15 * 60); // still unsold: unwind the spare long puts
+  assert.equal(ex.sent.at(-1), `sell 2.81 ${LONG} @ 140`);
+  ex.fill(LONG);
+  await step(5);
+  assert.equal(spread.status, 'open');
+  assert.equal(spread.amount, 2);
+  assert.equal(spread.spareLong, 0);
+  assert.equal(spread.openedAmount, 2);
+});
+
+test('with taking and unwinding switched off, an unsold short put leaves only the long put, as before', async () => {
+  const { ex, ctx, step, spread } = setup();
+  ctx.exec = { ...exec, takeMinutes: 0, unwindMinutes: 0 };
+  await step();
+  ex.fill(LONG);
+  await step(5);
+  await step(15 * 60);
   assert.equal(ex.sent.at(-1), `cancel ${SHORT}`);
   assert.equal(spread.status, 'long-only');
   assert.equal(spread.spareLong, 4.81);
-  assert.equal(spread.amount, 0);
 });
 
 test('closing buys the short put back first, then sells the long put, all at mids', async () => {

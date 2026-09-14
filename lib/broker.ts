@@ -45,7 +45,8 @@ export type AccountView = { currency: string; equity: number; availableFunds: nu
 export interface Broker {
   readonly mode: 'testnet' | 'live';
   readonly base: string;
-  limitOrder(side: Side, instrument: string, amount: number, price: number, label: string, currency: string): Promise<OrderView>;
+  /** Post-only by default: the order rests and never pays the spread. `postOnly: false` lets it take liquidity, used only to unwind. */
+  limitOrder(side: Side, instrument: string, amount: number, price: number, label: string, currency: string, opts?: { postOnly?: boolean }): Promise<OrderView>;
   /** Margin Deribit would require to buy or sell `amount` at `price`, in the settlement currency. */
   margins(instrument: string, amount: number, price: number): Promise<{ buy: number; sell: number }>;
   /**
@@ -123,7 +124,8 @@ export class DeribitBroker implements Broker {
     return this.#token.value;
   }
 
-  async limitOrder(side: Side, instrument: string, amount: number, price: number, label: string, currency: string): Promise<OrderView> {
+  async limitOrder(side: Side, instrument: string, amount: number, price: number, label: string, currency: string, opts: { postOnly?: boolean } = {}): Promise<OrderView> {
+    const postOnly = opts.postOnly ?? true;
     try {
       const r = await this.#call(`private/${side}`, {
         instrument_name: instrument,
@@ -131,7 +133,8 @@ export class DeribitBroker implements Broker {
         type: 'limit',
         price: String(price),
         time_in_force: 'good_til_cancelled',
-        post_only: 'true',
+        post_only: String(postOnly),
+        // With post_only, Deribit moves a crossing price behind the best price instead of rejecting it.
         reject_post_only: 'false',
         label,
       });

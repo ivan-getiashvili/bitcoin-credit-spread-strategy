@@ -509,7 +509,7 @@
   }
 
   function renderDeals() {
-    const done = S.spreads.filter((s) => s.status === 'closed' || s.status === 'settled' || s.status === 'cancelled');
+    const done = S.spreads.filter((s) => s.status === 'closed' || s.status === 'settled' || s.status === 'cancelled' || s.status === 'unwound');
     if (!done.length) {
       $('deals').innerHTML = '<div class="empty">No finished deals yet.</div>';
       return;
@@ -518,7 +518,7 @@
       const risk = sp.openedAmount * sp.maxLossUsd;
       const onRisk = risk > 0 && fin(sp.pnlUsd) ? (100 * sp.pnlUsd) / risk : NaN;
       const onAccount = sp.accountUsdAtEntry > 0 && fin(sp.pnlUsd) ? (100 * sp.pnlUsd) / sp.accountUsdAtEntry : NaN;
-      const result = sp.status === 'cancelled' ? '<span class="chip">Cancelled</span>' : sp.pnlUsd > 0 ? '<span class="chip win">Win</span>' : sp.pnlUsd < 0 ? '<span class="chip loss">Loss</span>' : '<span class="chip">Flat</span>';
+      const result = sp.status === 'cancelled' ? '<span class="chip">Cancelled</span>' : sp.status === 'unwound' ? '<span class="chip">Unwound</span>' : sp.pnlUsd > 0 ? '<span class="chip win">Win</span>' : sp.pnlUsd < 0 ? '<span class="chip loss">Loss</span>' : '<span class="chip">Flat</span>';
       return `<tr>
         <td><b>${sp.market}</b></td>
         <td>${when(sp.openedAt)}</td>

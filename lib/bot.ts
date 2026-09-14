@@ -186,7 +186,7 @@ export function createBot(d: BotDeps) {
   function strategyPnlUsd(): number {
     let total = 0;
     for (const sp of state.spreads) {
-      if (sp.status === 'closed' || sp.status === 'settled') total += sp.pnlUsd ?? 0;
+      if (sp.status === 'closed' || sp.status === 'settled' || sp.status === 'unwound') total += sp.pnlUsd ?? 0;
       else if (LIVE.has(sp.status) && (sp.amount > 0 || sp.spareLong > 0)) {
         const live = viewSpread(M[sp.market], sp, cache.chains[sp.market], config.alertDistancePct, now()).live;
         if (!live) return NaN;
@@ -519,7 +519,7 @@ export function createBot(d: BotDeps) {
           market: j.market,
           kind: j.kind,
           step: leg?.step,
-          says: leg?.says,
+          says: leg ? `${j.kind === 'entry' && j.phase === 'sell-long' ? 'selling the long puts back' : leg.says}${j.taking ? ` at the ${leg.side === 'buy' ? 'ask' : 'bid'}` : ''}` : undefined,
           instrument: leg && sp ? (leg.leg === 'long' ? sp.longName : sp.shortName) : '',
           order: j.order ? { side: j.order.side, price: j.order.price, amount: j.order.amount, filled: j.order.filled } : null,
           deadlineAt: j.phaseStartedAt + phaseLimitMs(j, config.execution),

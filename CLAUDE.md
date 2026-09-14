@@ -201,13 +201,35 @@ The code is split so a strategy change happens in one place:
     from the short put's `get_margins` quote.
   - Each coin card shows the margin today's spread needs.
 - **Execution:**
-  - Post-only limit order at the mid for the long put, re-pegged every 20s. The
-    long has 20 minutes to fill; nothing held if it doesn't.
+  - Post-only limit order at the mid for the long put, re-pegged every 20s (every
+    cycle on Cloudflare). The long has `buyLongMinutes` (15) at the mid; nothing is
+    held if it doesn't fill.
   - The short put is offered for exactly the filled amount, never below
     `long cost + fees + (width - riskUsd/amount)`, so the whole spread stays
-    within its budget. It has 60 minutes; if it doesn't fill, only the long put is
-    held.
-  - Closing: buy the short back, then sell the long, with 30 minutes per leg.
+    within its budget. It has `sellShortMinutes` (15).
+  - **Every leg: 15 minutes at the mid, then 15 at the other side of the book**
+    (Ivan's rule, 2026-09-14: "if any leg is not filled after fifteen minutes, buy
+    at the market"). The second stage is a limit order at the best ask (buying) or
+    bid (selling) with post-only off, so it fills like a market order but cannot
+    fill at a silly price in a thin book. It still obeys the risk budget: a buy
+    capped by `longMax` or a sell below the floor rests at the limit instead
+    (`job.taking`, `takeMinutes`). Taker and maker fees are equal on Deribit
+    options, so taking costs only the spread.
+  - **Unwind: never hold the long puts alone.** If the short still does not
+    fill, the long puts are sold back: at the mid for `unwindMinutes` (15), then at
+    the bid for `takeMinutes`. The record ends `unwound` with the small realised
+    cost, counted as a finished deal. Only if even the bid finds no buyer are the
+    puts kept (`long-only`). Ivan called holding to expiry "another strategy, just
+    gambling". A partly filled short opens a spread for the filled part and unwinds
+    the rest.
+  - Why 15 minutes: a judgment, not a measurement. The order is re-pegged to the
+    mid every minute; after 15 minutes without a trade through it, the market has
+    usually drifted from where the spread was sized and the floor blocks the sell.
+    On 2026-09-14 evening the fills took 4 min (SOL) and 11 min (BTC).
+  - **Deribit combo orders** would fill both legs at once, but nobody quotes combos
+    on the USDC puts (test or real exchange), so a combo order would sit forever.
+  - Closing: buy the short back, then sell the long, `exitLegMinutes` (15) at the
+    mid per leg, then `takeMinutes` at the other side.
   - Positions are held to expiry by default and settled at Deribit's delivery
     price.
   - `maxConcessionPct` (default 0) is how far past the mid an order may reach.
@@ -313,8 +335,9 @@ Results:
 
 ## Hard rules for code
 
-1. **Limit orders only, post-only.** Never price past the mid unless Ivan raises
-   `maxConcessionPct`.
+1. **Limit orders only.** Post-only at the mid first; after `takeMinutes` a leg may
+   cross to the other side of the book (Ivan's rule), but never past the risk
+   budget's limit. No market orders: a thin book could fill one at any price.
 2. **One spread, one risk.** Size the pair from the account's risk budget. Never
    shrink it for margin; skip instead.
 3. **Keep the leg order.** The long is bought before the short is sold, the short

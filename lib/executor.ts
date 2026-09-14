@@ -51,6 +51,19 @@ export type ExecSettings = {
   sellShortMinutes: number;
   /** Time allowed for each leg when closing, minutes. */
   exitLegMinutes: number;
+  /**
+   * A leg that has not filled after its minutes at the mid is re-placed at the other side of
+   * the book (the ask when buying, the bid when selling), as a taker, for this many more
+   * minutes. Still within the risk budget: a price the budget forbids rests at the budget's
+   * limit instead. 0 never takes.
+   */
+  takeMinutes?: number;
+  /**
+   * If the short put still does not fill, the long puts bought are sold back rather than
+   * held: at the mid for this many minutes, then at the bid for `takeMinutes`. 0 keeps them
+   * instead, as "long-only".
+   */
+  unwindMinutes?: number;
 };
 
 export type Plan = {
@@ -112,7 +125,8 @@ export type SpreadRecord = {
   creditUsd: number;
   maxLossUsd: number;
   lossToCredit: number;
-  status: 'opening' | 'open' | 'long-only' | 'closing' | 'closed' | 'settled' | 'cancelled';
+  /** `unwound`: the short put never filled and the long puts were sold back; only fees and slippage were lost. */
+  status: 'opening' | 'open' | 'long-only' | 'closing' | 'closed' | 'settled' | 'cancelled' | 'unwound';
   note?: string;
   closedAt?: string;
   settlePrice?: number;
@@ -135,8 +149,13 @@ export type Job = {
   order?: OrderView & { repricedAt: number };
   /** Label of an order being placed. If the bot stops mid-request, the next step looks it up. */
   pendingLabel?: string;
+  /** At the other side of the book as a taker, after the mid did not fill in time. */
+  taking?: boolean;
   seq: number;
 };
+
+/** An entry job selling its long puts back because the short put did not fill. */
+const unwinding = (job: Job) => job.kind === 'entry' && job.phase === 'sell-long';
 
 export type JobContext = {
   broker: Broker;
@@ -275,7 +294,11 @@ export const LEG = {
 } as const;
 
 export function phaseLimitMs(job: Job, exec: ExecSettings): number {
-  const minutes = job.phase === 'buy-long' ? exec.buyLongMinutes : job.phase === 'sell-short' ? exec.sellShortMinutes : exec.exitLegMinutes;
+  const minutes = job.taking ? exec.takeMinutes ?? 0
+    : job.phase === 'buy-long' ? exec.buyLongMinutes
+    : job.phase === 'sell-short' ? exec.sellShortMinutes
+    : unwinding(job) ? exec.unwindMinutes ?? 0
+    : exec.exitLegMinutes;
   return minutes * 60_000;
 }
 
@@ -317,7 +340,8 @@ async function targetPrice(job: Job, spread: SpreadRecord, ctx: JobContext): Pro
   if (!(mid > 0)) return null;
 
   const buying = LEG[job.phase].side === 'buy';
-  const give = Math.min(Math.max(ctx.exec.maxConcessionPct, 0), 100) / 100;
+  // Taking goes all the way to the other side; everything else obeys the concession setting.
+  const give = job.taking ? 1 : Math.min(Math.max(ctx.exec.maxConcessionPct, 0), 100) / 100;
   let price = buying ? mid + give * Math.max((ask ?? mid) - mid, 0) : mid - give * Math.max(mid - (bid ?? mid), 0);
 
   if (job.phase === 'buy-long') {
@@ -393,6 +417,13 @@ function complete(job: Job, spread: SpreadRecord, ctx: JobContext, why: string):
       spread.status = 'long-only';
       spread.note = `Short put not sold (${why}). Holding ${spread.spareLong} long puts only, with no short exposure.`;
       ctx.log(`${m}: ${spread.note}`, 'warn');
+    } else if (spread.fills.length) {
+      // Bought, then sold back: no spread ever existed, only fees and slippage were paid.
+      spread.status = 'unwound';
+      spread.closedAt = new Date(ctx.now()).toISOString();
+      spread.pnlUsd = toUsd(ctx.market, spread.cashQuote, ctx.index());
+      spread.note = `Unwound: the short put did not fill, so the long puts were sold back (${why}). Cost $${(-spread.pnlUsd).toFixed(2)}.`;
+      ctx.log(`${m}: ${spread.note}`, 'warn');
     } else {
       spread.status = 'cancelled';
       spread.note = `Nothing filled: ${why}.`;
@@ -413,15 +444,29 @@ function complete(job: Job, spread: SpreadRecord, ctx: JobContext, why: string):
   }
 }
 
-function finishPhase(job: Job, spread: SpreadRecord, ctx: JobContext, why: string): void {
+function finishPhase(job: Job, spread: SpreadRecord, ctx: JobContext, why: string, timedOut = false): void {
+  // Out of time at the mid with something left to do: the same leg again, at the other side of the book.
+  if (timedOut && !job.taking && phaseAmount(job, spread) > EPS && (ctx.exec.takeMinutes ?? 0) > 0) {
+    const side = LEG[job.phase as Exclude<Phase, 'done'>].side === 'buy' ? 'ask' : 'bid';
+    ctx.log(`${spread.market}: ${LEG[job.phase as Exclude<Phase, 'done'>].says}: ${why}; re-placing at the ${side}`, 'warn');
+    job.taking = true;
+    job.phaseStartedAt = ctx.now();
+    return;
+  }
   const next = (phase: Phase) => {
     job.phase = phase;
     job.phaseStartedAt = ctx.now();
     job.phaseFilled = 0;
+    job.taking = false;
   };
   if (job.phase === 'buy-long' && spread.spareLong > EPS) {
     if (why !== 'filled') ctx.log(`${spread.market}: long put ${why}; offering short puts against the ${spread.spareLong} bought`, 'warn');
     return next('sell-short');
+  }
+  // The short put did not fill: sell the long puts back rather than hold them.
+  if (job.phase === 'sell-short' && spread.spareLong > EPS && (ctx.exec.unwindMinutes ?? 0) > 0) {
+    ctx.log(`${spread.market}: short put ${why}; selling the ${spread.spareLong} long puts back rather than holding them`, 'warn');
+    return next('sell-long');
   }
   if (job.phase === 'buy-short' && spread.spareLong > EPS) return next('sell-long');
   complete(job, spread, ctx, why);
@@ -444,7 +489,7 @@ async function step(job: Job, spread: SpreadRecord, ctx: JobContext): Promise<vo
       o = await ctx.broker.cancelOrder(o.orderId);
       applyFill(job, spread, o, ctx);
       job.order = undefined;
-      return finishPhase(job, spread, ctx, `not filled within ${Math.round(limitMs / 60_000)} minutes`);
+      return finishPhase(job, spread, ctx, `not filled within ${Math.round(limitMs / 60_000)} minutes${job.taking ? ' at the other side of the book' : ''}`, true);
     }
     if (now - job.order.repricedAt >= ctx.exec.repriceSeconds * 1000) {
       job.order.repricedAt = now;
@@ -487,7 +532,7 @@ async function step(job: Job, spread: SpreadRecord, ctx: JobContext): Promise<vo
     }
   }
 
-  if (now - job.phaseStartedAt >= limitMs) return finishPhase(job, spread, ctx, `not filled within ${Math.round(limitMs / 60_000)} minutes`);
+  if (now - job.phaseStartedAt >= limitMs) return finishPhase(job, spread, ctx, `not filled within ${Math.round(limitMs / 60_000)} minutes`, true);
   const price = await targetPrice(job, spread, ctx);
   if (price === null) return finishPhase(job, spread, ctx, `no price keeps the spread within ${budget} at mid prices`);
 
@@ -496,10 +541,12 @@ async function step(job: Job, spread: SpreadRecord, ctx: JobContext): Promise<vo
   const label = `${spread.id}-${leg.code}${job.seq}`;
   job.pendingLabel = label;
   ctx.save();
-  const placed = await ctx.broker.limitOrder(leg.side, instrumentOf(job, spread), amount, price, label, ctx.market.currency);
+  // A taking order must be allowed to take liquidity; every other order only makes it.
+  const placed = await ctx.broker.limitOrder(leg.side, instrumentOf(job, spread), amount, price, label, ctx.market.currency, { postOnly: !job.taking });
   job.pendingLabel = undefined;
   job.order = { ...placed, filled: 0, avgPrice: 0, repricedAt: now };
-  ctx.log(`${spread.market}: ${leg.says}: limit ${placed.side} ${amount} ${placed.instrument} at ${px(placed.price)}`);
+  const says = unwinding(job) ? 'selling the long puts back' : leg.says;
+  ctx.log(`${spread.market}: ${says}${job.taking ? ` at the ${leg.side === 'buy' ? 'ask' : 'bid'}` : ''}: limit ${placed.side} ${amount} ${placed.instrument} at ${px(placed.price)}`);
   applyFill(job, spread, placed, ctx);
   if (isFinished(placed)) {
     job.order = undefined;
@@ -509,11 +556,12 @@ async function step(job: Job, spread: SpreadRecord, ctx: JobContext): Promise<vo
 
 /** Advance a job as far as it can go now: check its order, move it, or place the next leg's order. */
 export async function advanceJob(job: Job, spread: SpreadRecord, ctx: JobContext): Promise<void> {
-  // A finished phase hands over straight away, so the next leg's order goes out in the same step.
+  // A finished phase (or a switch to taking) hands over straight away, so the next order goes out in the same step.
   for (let i = 0; i < 4 && job.phase !== 'done'; i++) {
     const phase = job.phase;
+    const taking = job.taking;
     await step(job, spread, ctx);
-    if (job.phase === phase || job.order) break;
+    if ((job.phase === phase && job.taking === taking) || job.order) break;
   }
 }
 

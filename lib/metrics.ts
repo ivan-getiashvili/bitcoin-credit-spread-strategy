@@ -18,7 +18,7 @@ const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
 const mean = (xs: number[]) => (xs.length ? sum(xs) / xs.length : NaN);
 
 export function dealStats(spreads: SpreadRecord[]) {
-  const deals = spreads.filter((s) => (s.status === 'closed' || s.status === 'settled') && Number.isFinite(s.pnlUsd));
+  const deals = spreads.filter((s) => (s.status === 'closed' || s.status === 'settled' || s.status === 'unwound') && Number.isFinite(s.pnlUsd));
   const pnls = deals.map((d) => d.pnlUsd!);
   const wins = pnls.filter((p) => p > 0);
   const losses = pnls.filter((p) => p < 0);
