@@ -334,9 +334,13 @@ export function createBot(d: BotDeps) {
     for (const id of Object.keys(rt.jobErrors)) if (!state.jobs.some((j) => j.id === id)) delete rt.jobErrors[id];
   }
 
-  /** Coins worth reading the chain for: switched on, or holding a spread or order work. */
+  /**
+   * Coins worth reading the chain for: enabled in the config (so a paused coin still shows
+   * its price and today's plan), switched on, or holding a spread or order work.
+   */
   function watchedMarkets(): MarketId[] {
-    return IDS.filter((id) => state.tradingOn[id]
+    return IDS.filter((id) => config.markets[id].enabled
+      || state.tradingOn[id]
       || state.spreads.some((s) => s.market === id && LIVE.has(s.status))
       || workingJobs().some((j) => j.market === id));
   }
@@ -349,7 +353,7 @@ export function createBot(d: BotDeps) {
       return summaries.get(currency)!;
     };
     const watched = watchedMarkets();
-    for (const id of IDS) if (!watched.includes(id)) cache.snaps[id] = { skip: 'trading is switched off for this coin' };
+    for (const id of IDS) if (!watched.includes(id)) cache.snaps[id] = { skip: 'this coin is disabled in the configuration' };
 
     for (const id of watched) {
       const market = M[id];

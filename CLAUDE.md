@@ -73,9 +73,16 @@ Part of `~/projects/algorithmic-trading-strategies/`.
       token "cyclebasis build token", `NODE_VERSION=24`. It runs `npm test` then
       `npx wrangler deploy`. Every push to main redeploys, and a failing test blocks the
       deploy.
-    - **Keys:** Worker secrets `DERIBIT_TESTNET_CLIENT_ID` and
-      `DERIBIT_TESTNET_CLIENT_SECRET`, added by Ivan in the Cloudflare dashboard. Never
-      set them from here. Without them the bot shows prices and cannot trade.
+    - **Keys:** `DERIBIT_TESTNET_CLIENT_ID` and `DERIBIT_TESTNET_CLIENT_SECRET` on the
+      Worker, added by Ivan in the Cloudflare dashboard on 2026-09-14 as plain **Text**
+      variables (readable in the dashboard; he chose to keep the key that was exposed
+      in chat). `keep_vars: true` in wrangler.jsonc stops deploys from wiping them.
+      Never set or read the values from here; to check them, compare SHA-256
+      fingerprints (that is how a one-character typo in the ID was found). The bot
+      logged in at 16:35 UTC: 100,000 USDC, segregated_pm.
+    - **BTC is paused** (D1 command on 2026-09-14) until Ivan's strategy changes are
+      in; he wants the first deal opened by hand after them. Unpause with
+      `INSERT INTO commands (kind, payload) VALUES ('trading', '{"market":"BTC","on":true}')`.
     - **Domain:** cryptospread.trade plus www, bought 2026-09-14 through Cloudflare
       Registrar. It cost $4.18 and renews at $5.18 a year, with auto-renew off and WHOIS
       privacy on.
