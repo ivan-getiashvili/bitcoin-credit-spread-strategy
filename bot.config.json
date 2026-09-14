@@ -7,7 +7,7 @@
   "chainSeconds": 30,
   "sampleSeconds": 60,
   "capitalUsd": 100000,
-  "riskPerTradePct": 2,
+  "riskPerTradePct": 1,
   "maxOpenSpreads": 3,
   "alertDistancePct": 0.5,
   "entry": { "fromUtc": "08:05", "toUtc": "10:00" },
@@ -20,7 +20,7 @@
   },
   "markets": {
     "BTC": { "enabled": true, "minHoursToExpiry": 12 },
-    "ETH": { "enabled": false, "minHoursToExpiry": 12 },
-    "SOL": { "enabled": false, "minHoursToExpiry": 12 }
+    "ETH": { "enabled": true, "minHoursToExpiry": 12 },
+    "SOL": { "enabled": true, "minHoursToExpiry": 12 }
   }
 }

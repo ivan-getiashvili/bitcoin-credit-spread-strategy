@@ -15,13 +15,16 @@ Part of `~/projects/algorithmic-trading-strategies/`.
 2. **Dollar options, measured in dollars.** Ivan asked for USDT; Deribit lists no
    USDT-settled options, so the bot trades its USDC-settled ones (`BTC_USDC-...`).
    Exact USDT would mean another exchange, such as Bybit.
-3. **Risk 2% of the current account value per deal.** A deal is the whole spread,
-   one construction with one risk; never size or judge the legs separately.
+3. **Risk 1% of the current account value per deal** (2% until 2026-09-14, when
+   Ivan lowered it to run three coins at once). A deal is the whole spread, one
+   construction with one risk; never size or judge the legs separately.
 4. **Demo account of $100k**, not the ~$10M test balance. The bot uses
    `capitalUsd: 100000` plus its own P&L as the account value.
-5. **Trade by default.** Coins are on unless paused on the dashboard. SOL was
-   dropped at Ivan's request on 2026-09-13 (paused, `enabled: false`); ETH stays off
-   because the test exchange quotes no ETH_USDC options. BTC is the only coin trading.
+5. **Trade by default: BTC, ETH and SOL, one spread each, every day.** Ivan
+   turned all three on 2026-09-14 to collect deal data (SOL had been dropped the day
+   before; ETH had shown no test-exchange quotes, but trades in the morning window).
+   The first deals were started by hand on 2026-09-14 in the evening; from
+   2026-09-15 the 08:05 UTC schedule takes over.
 6. **Real exchange, not a simulation:** the Deribit test exchange, with trades
    visible in the account.
 7. **Limit orders only**, entries and exits. Never pay the spread.
@@ -80,9 +83,10 @@ Part of `~/projects/algorithmic-trading-strategies/`.
       Never set or read the values from here; to check them, compare SHA-256
       fingerprints (that is how a one-character typo in the ID was found). The bot
       logged in at 16:35 UTC: 100,000 USDC, segregated_pm.
-    - **BTC is paused** (D1 command on 2026-09-14) until Ivan's strategy changes are
-      in; he wants the first deal opened by hand after them. Unpause with
-      `INSERT INTO commands (kind, payload) VALUES ('trading', '{"market":"BTC","on":true}')`.
+    - **Pausing a coin:**
+      `INSERT INTO commands (kind, payload) VALUES ('trading', '{"market":"BTC","on":false}')`
+      (`"on":true` to resume). BTC was paused for a few hours on 2026-09-14 and
+      resumed the same evening.
     - **Domain:** cryptospread.trade plus www, bought 2026-09-14 through Cloudflare
       Registrar. It cost $4.18 and renews at $5.18 a year, with auto-renew off and WHOIS
       privacy on.
