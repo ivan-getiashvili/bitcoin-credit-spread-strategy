@@ -8,6 +8,7 @@
   "sampleSeconds": 60,
   "capitalUsd": 100000,
   "riskPerTradePct": 1,
+  "sizingSlackPct": 5,
   "maxOpenSpreads": 3,
   "alertDistancePct": 0.5,
   "entry": { "fromUtc": "08:05", "toUtc": "10:00" },

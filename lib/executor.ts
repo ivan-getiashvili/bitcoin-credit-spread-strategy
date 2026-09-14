@@ -204,10 +204,16 @@ export function planDailySpread(market: Market, chain: { options: Option[]; spot
   };
 }
 
-/** Units of underlying that keep the whole spread's max loss within `riskUsd`, on the order-size grid. 0 if none. */
-export function sizeFor(plan: Plan, riskUsd: number, spec: InstrumentSpec): number {
+/**
+ * Units of underlying that keep the whole spread's max loss within `riskUsd`, on the
+ * order-size grid. 0 if none. `slackPct` sizes to a little under the budget: the orders
+ * are placed at live book prices a moment after sizing at chain mids, and a spread sized
+ * to the budget exactly is refused by the price floor after a few dollars of movement.
+ */
+export function sizeFor(plan: Plan, riskUsd: number, spec: InstrumentSpec, slackPct = 0): number {
   const step = spec.minAmount;
-  const units = Math.floor(riskUsd / plan.maxLossUsd / step + 1e-9) * step;
+  const budget = riskUsd * (1 - Math.min(Math.max(slackPct, 0), 50) / 100);
+  const units = Math.floor(budget / plan.maxLossUsd / step + 1e-9) * step;
   return units >= step ? r8(units) : 0;
 }
 

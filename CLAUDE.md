@@ -189,8 +189,12 @@ The code is split so a strategy change happens in one place:
   least `minHoursToExpiry` (12) hours away. If an entry fills nothing, it retries
   after 30 minutes. "Enter now", "Close" and "Stop" act at once.
 - **Sizing:**
-  - units = floor(riskUsd / max loss per unit at mids, to the minimum order size),
-    where riskUsd = 2% of the account value.
+  - units = floor(riskUsd × (1 − `sizingSlackPct`/100) / max loss per unit at mids, to
+    the minimum order size), where riskUsd = 1% of the account value and the slack
+    is 5%. The slack exists because the first BTC entry on 2026-09-14 was cancelled
+    at once: sized to the budget exactly at chain mids, a few dollars of movement in
+    the live book made the price floor refuse it. The 1% cap is still enforced by
+    the floor at order time; the slack only stops false refusals.
   - Entry is skipped if the smallest order already exceeds the budget, or if the
     spread's margin is more than the free USDC. Under portfolio margin, that
     margin comes from `pme/simulate` of the whole spread; under standard margin,

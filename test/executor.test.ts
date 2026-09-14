@@ -120,6 +120,9 @@ function setup(b = books()) {
 test('sizing: 2% of a $100k account buys as many units as keep the whole spread within $2,000', () => {
   assert.equal(sizeFor(plan, 2000, SPEC), 4.81);
   assert.equal(sizeFor(plan, 3, SPEC), 0);
+  // With 5% slack the spread is sized as if the budget were $1,900, so the orders survive small price moves.
+  assert.equal(sizeFor(plan, 2000, SPEC, 5), sizeFor(plan, 1900, SPEC));
+  assert.ok(sizeFor(plan, 2000, SPEC, 5) < sizeFor(plan, 2000, SPEC));
 });
 
 test('tick grid: BTC_USDC prices round to 5 USDC below 1,000 and 20 USDC above', () => {

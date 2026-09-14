@@ -43,6 +43,8 @@ export type BotConfig = {
   capitalUsd: number | null;
   /** Share of the current account value one whole spread may lose, percent. */
   riskPerTradePct: number;
+  /** Size a little under the budget, percent, so a few dollars of price movement between sizing and the order do not cancel the entry. */
+  sizingSlackPct?: number;
   /** Across all coins. One spread per coin per day. */
   maxOpenSpreads: number;
   /** A spread turns "watch" when price is within this % above the sold put. */
@@ -222,7 +224,7 @@ export function createBot(d: BotDeps) {
       const account = accountValueUsd();
       if (Number.isFinite(account)) {
         const riskUsd = (account * config.riskPerTradePct) / 100;
-        size = { amount: sizeFor(planned.plan, riskUsd, spec), riskUsd, minAmount: spec.minAmount };
+        size = { amount: sizeFor(planned.plan, riskUsd, spec, config.sizingSlackPct), riskUsd, minAmount: spec.minAmount };
         if (size.amount > 0) {
           try {
             const m = await marginCheck(id, planned.plan, size.amount);
@@ -281,7 +283,7 @@ export function createBot(d: BotDeps) {
 
     // One trade, one risk: the pair together may lose at most this much.
     const riskUsd = (account * config.riskPerTradePct) / 100;
-    const amount = sizeFor(plan, riskUsd, spec);
+    const amount = sizeFor(plan, riskUsd, spec, config.sizingSlackPct);
     if (!amount) return `even the smallest order (${spec.minAmount} ${id}) would risk more than $${riskUsd.toFixed(2)}`;
 
     // The size stays at the full risk; if the exchange will not hold enough collateral
