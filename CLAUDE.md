@@ -35,8 +35,25 @@ Part of `~/projects/algorithmic-trading-strategies/`.
 10. **No disclaimers, no more what-ifs (2026-09-13).** Don't add "research project /
     backtest negative" notes to public pages, and don't test ideas such as excluding
     bear markets unless he asks. Build it and see where it goes.
-11. **Not on the Mac.** The bot runs on GitHub Actions (`.github/workflows/bot.yml`,
-    chosen 2026-09-13 over a paid server).
+11. **Not on the Mac.** The bot is moving to **Cloudflare** (Ivan's decision,
+    2026-09-14).
+    - **Order of work:**
+      1. Ivan's changes to the strategy.
+      2. Move to Cloudflare, with a cron schedule.
+      3. Ivan buys the domain.
+      4. Dashboard design and metrics fixes.
+      5. Open the first deal manually, then let cron schedule the next ones.
+    - **Why GitHub Actions was dropped:** scheduled runs were dropped. Only 5 of ~90
+      ran between 13 Sep 17:00 and 14 Sep 10:00 UTC, and none ran in the entry window.
+      GitHub's Actions terms also rule out using Actions "as part of a serverless
+      application".
+    - **Today:** `bot.yml` was disabled on 2026-09-14. No trade was made (the
+      Actions secrets were never added), and the test account is flat at $100,000.
+      Re-enable with `gh workflow enable bot.yml` only if GitHub is chosen again.
+    - **Cloudflare plan:** the free Workers plan allows 10 ms CPU per cron run,
+      which is likely too little to parse the option chain; Workers Paid ($5/month)
+      allows 30 s. Cron runs at most once a minute (UTC).
+    - **The GitHub Actions setup below is kept for reference.**
     - **Repo:** PUBLIC since 2026-09-13 (Ivan's choice; the full history was scanned
       clean of keys first), `ivan-getiashvili/bitcoin-credit-spread-strategy`, default
       branch `main`.
