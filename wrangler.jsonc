@@ -26,6 +26,11 @@
   // Keep invocation logs (CPU time, errors) so problems can be diagnosed from the dashboard or API.
   "observability": { "enabled": true },
 
+  // Ivan adds the Deribit keys in the Cloudflare dashboard. Without this, every deploy
+  // from GitHub would replace the Worker's variables with the (empty) set declared here
+  // and wipe them.
+  "keep_vars": true,
+
   // The custom domain lives here so a redeploy re-asserts it; Cloudflare creates the DNS
   // records and certificate. workers.dev stays on as a fallback address.
   "workers_dev": true,
