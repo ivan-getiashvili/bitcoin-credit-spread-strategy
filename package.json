@@ -12,6 +12,8 @@
     "spreads": "node --experimental-strip-types scripts/find-spreads.ts",
     "history": "node --experimental-strip-types scripts/fetch-history.ts",
     "history:daily": "node --experimental-strip-types scripts/fetch-daily.ts",
+    "history:tapes": "node --experimental-strip-types scripts/fetch-tapes.ts",
+    "structures": "node --experimental-strip-types scripts/structure-search.ts",
     "grid": "node --experimental-strip-types scripts/grid-search.ts",
     "wing-test": "node --experimental-strip-types scripts/wing-test.ts",
     "liquidity": "node --experimental-strip-types scripts/liquidity.ts",

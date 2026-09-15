@@ -50,6 +50,8 @@ export type TapeTrade = {
   name: string;
   strike: number;
   expiryMs: number;
+  /** Absent in older caches, which hold puts only. */
+  type?: 'put' | 'call';
   /** Premium in the option's quote currency: coin for inverse, USDC for linear. */
   price: number;
   /** Deribit's mark for the option at the moment of the trade, same units as `price`. */
@@ -65,6 +67,11 @@ export type TapeTrade = {
 
 /** Every ordinary put trade in a market between two timestamps. */
 export async function getPutTape(market: Market, startMs: number, endMs: number): Promise<TapeTrade[]> {
+  return getOptionTape(market, startMs, endMs, new Set(['put']));
+}
+
+/** Every ordinary option trade of the given types in a market between two timestamps. */
+export async function getOptionTape(market: Market, startMs: number, endMs: number, types: Set<'put' | 'call'>): Promise<TapeTrade[]> {
   const out: TapeTrade[] = [];
   const seen = new Set<string>();
   let from = startMs;
@@ -87,12 +94,13 @@ export async function getPutTape(market: Market, startMs: number, endMs: number)
       // are forced. None of them is a price a market order could have got.
       if (x.block_trade_id || x.combo_id || x.liquidation) continue;
       const p = parseName(String(x.instrument_name), market.prefix);
-      if (!p || p.type !== 'put') continue;
+      if (!p || !types.has(p.type)) continue;
       out.push({
         t: x.timestamp,
         name: x.instrument_name,
         strike: p.strike,
         expiryMs: p.expiryMs,
+        type: p.type,
         price: x.price,
         mark: x.mark_price,
         iv: x.iv,

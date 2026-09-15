@@ -49,3 +49,9 @@ export function putPrice(f: number, k: number, t: number, vol: number): number {
   const d2 = d1 - sq;
   return k * normCdf(-d2) - f * normCdf(-d1);
 }
+
+/** Black-76 call value, by put-call parity with r = 0: C = P + F - K. Same caveats as `putPrice`. */
+export function callPrice(f: number, k: number, t: number, vol: number): number {
+  if (!(f > 0 && k > 0)) return 0;
+  return Math.max(putPrice(f, k, t, vol) + f - k, 0);
+}
