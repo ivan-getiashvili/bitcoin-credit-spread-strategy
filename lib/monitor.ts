@@ -13,7 +13,7 @@ const LIVE = new Set(['opening', 'open', 'long-only', 'closing']);
 
 export type LiveView = {
   spot: number;
-  /** Price above the short strike, percent. Negative once the short put is in the money. */
+  /** Distance of the price from the sold strike on its safe side, percent. Negative once the sold option is in the money. */
   distancePct: number;
   daysLeft: number;
   unrealizedUsd: number;
@@ -41,8 +41,10 @@ export function viewSpread(
   const pnl = unrealizedUsd(market, spread, short.mark, long.mark, spot);
   const risk = spread.amount * spread.maxLossUsd;
   const daysLeft = (spread.expiryMs - now) / DAY;
-  const g = short.markIv ? bs(spot, spread.shortStrike, Math.max(daysLeft, 1e-6) / 365, short.markIv / 100, 'put') : null;
-  const distancePct = (spot / spread.shortStrike - 1) * 100;
+  const call = spread.type === 'call';
+  const g = short.markIv ? bs(spot, spread.shortStrike, Math.max(daysLeft, 1e-6) / 365, short.markIv / 100, call ? 'call' : 'put') : null;
+  // Positive while the price is on the safe side of the sold strike: above it for puts, below it for calls.
+  const distancePct = (call ? spread.shortStrike / spot - 1 : spot / spread.shortStrike - 1) * 100;
   return {
     ...spread,
     live: {
@@ -52,7 +54,7 @@ export function viewSpread(
       unrealizedUsd: pnl,
       unrealizedR: risk > 0 ? pnl / risk : NaN,
       chanceAboveShortPct: g ? (1 - g.probItm) * 100 : NaN,
-      state: spot < spread.shortStrike ? 'breached' : distancePct < alertDistancePct ? 'watch' : 'safe',
+      state: distancePct < 0 ? 'breached' : distancePct < alertDistancePct ? 'watch' : 'safe',
     },
   };
 }

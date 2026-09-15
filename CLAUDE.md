@@ -6,31 +6,30 @@ research and backtest. Owner: Ivan. Explain concepts when introducing them.
 
 Part of `~/projects/algorithmic-trading-strategies/`.
 
-## Ivan's rules (latest: 2026-09-13)
+## Ivan's rules (latest: 2026-09-15)
 
-1. **Strategy:** every day at the start of the options day, buy the put at the
-   **second strike below the price**, then sell the put at the **first strike
-   below the price**. This replaced the earlier weekly "farthest strike that meets
-   2:1" rule.
+1. **Strategy (since 2026-09-15): weekly credit spreads by ATR distance.** Every
+   Friday at 08:05 UTC, for the next Friday's expiry: sell a **put spread on ETH**
+   and a **call spread on BTC**. The sold strike is the first listed strike at least
+   0.5 × ATR from the price (ATR = mean absolute daily settlement move over 14
+   days, scaled by √7 for the week); the bought strike is 2 listed strikes further
+   out. Chosen from the structure study below: the one rule positive in-sample and
+   in 2026 for both coins at bid/ask fills. `bot.config.json`: `strategy`,
+   `entry.weekdays: [5]`, `markets.*.structure`.
+   - History: 13 Sep 2026 daily put spread (first/second strike below), which the
+     grid search, the ATR study and the structure study all showed losing after
+     fees; the first two daily deals (14 Sep) lost about $1,000.
 2. **Dollar options, measured in dollars.** Ivan asked for USDT; Deribit lists no
    USDT-settled options, so the bot trades its USDC-settled ones (`BTC_USDC-...`).
    Exact USDT would mean another exchange, such as Bybit.
-3. **Risk 1% of the current account value per deal** (2% until 2026-09-14, when
-   Ivan lowered it to run three coins at once). A deal is the whole spread, one
-   construction with one risk; never size or judge the legs separately.
+3. **Risk 1% of the current account value per deal** (2% until 2026-09-14). A deal
+   is the whole spread, one construction with one risk; never size or judge the
+   legs separately.
 4. **Demo account of $100k**, not the ~$10M test balance. The bot uses
    `capitalUsd: 100000` plus its own P&L as the account value.
-5. **Trade by default: BTC, ETH and SOL, one spread each, every day.** Ivan
-   turned all three on 2026-09-14 to collect deal data (SOL had been dropped the day
-   before; ETH had shown no test-exchange quotes, but trades in the morning window).
-   The first deals were started by hand on 2026-09-14 at 16:52 UTC; from
-   2026-09-15 the 08:05 UTC schedule takes over.
-   - **First deals (2026-09-14 evening):** SOL 100 × 102/101 puts, credit $23.83,
-     max loss $76.17 (only 100 of 1,310 filled before the price moved). BTC 2.32 ×
-     78,500/78,000, credit $169.88, max loss $990.12; the long filled after 11 min,
-     the short after 5. ETH was refused: the test exchange's ETH marks at that hour
-     were nonsense (a put marked wider than the spread), so it sized at 0. Both
-     spreads expire 2026-09-15 08:00 UTC and are settled by the bot after 08:10.
+5. **Trade by default: BTC and ETH. SOL is off** (2026-09-15: its options barely
+   trade on the real exchange, so it cannot be backtested; it had also been the
+   thinnest on the test exchange).
 6. **Real exchange, not a simulation:** the Deribit test exchange, with trades
    visible in the account.
 7. **Limit orders only**, entries and exits. Never pay the spread.
@@ -106,6 +105,45 @@ Part of `~/projects/algorithmic-trading-strategies/`.
       the GitHub Pages copy and the server/tunnel files were removed on 2026-09-14.
     - **Never run `npm run bot`** (the local runner) against the same account while
       the Worker has keys: both would trade.
+
+## Simulated history in front of the real one (`lib/seed.ts`, 2026-09-14)
+
+Ivan did not want to wait seven days for Sharpe, Sortino and drawdown, so the
+dashboard shows a seed: the current strategy run on real morning prices for the 8
+days before launch, sized like the live bot (1%, 5% slack, mid fills, fees).
+- `npm run seed -- --to 2026-09-13 --days 8` writes `data/seed.json` from the cached
+  daily history. Refresh the cache first: `npm run history:daily -- --from <date>
+  --markets BTC,ETH,SOL`.
+- **SOL is thin:** on the real exchange its daily puts traded on only 4 of the 8
+  mornings, and one thin morning reconstructed as a 96/92 spread on a $1 grid, so
+  the seed keeps only SOL days on the real grid (`GRID` in scripts/seed.ts): two
+  deals, both full losses (9 and 10 Sep).
+- On Cloudflare the seed is the D1 `kv` row `seed` (uploaded through the
+  connector with a parameterised query); locally it is `data/seed.json`.
+- `withSeed` shifts the seed curve so its last close lands on the real curve's
+  first sample, prepends its 8 daily closes to the stats and the chart, and adds
+  its 14 settled deals (marked `simulated: true`) to the deal stats and the table.
+  The page labels every simulated day and deal and explains it under the chart.
+- **It drops out by itself** once the real record has 8 daily closes (7 returns):
+  `seedActive` turns false, the Worker deletes the row and logs it.
+- Seed result (6-13 Sep): BTC −$2,121 over 8 deals, ETH +$1,428 over 6, SOL
+  −$1,937 over 2, total −$2,630. Friday expiries pay delivery fees, so a full loss
+  there slightly exceeds the budget (−$1,024 on 11 Sep).
+
+## Simulated history in front of the real one (`lib/seed.ts`, back on 2026-09-15)
+
+Ivan first asked for it (14 Sep), then had it removed, then asked for it again with
+the weekly strategy: "I want my metrics not to be null". `npm run seed -- --to
+<last Friday> --weeks 10` runs the configured strategy (ETH put spread, BTC call
+spread, 0.5 × ATR, 2 strikes, bid/ask fills, fees, 1% risk with slack) on the
+cached tapes (`npm run history:tapes` first) and writes `data/seed.json`; upload
+it to the D1 `kv` row `seed` through the connector with a parameterised query.
+`withSeed` shifts the seed curve to end where the real one starts, adds the deals
+marked `simulated`, and the whole seed drops out once the real record has 8 daily
+closes. The page labels every simulated day and deal.
+- Seed of 2026-09-15 (settlements 10 Jul - 11 Sep): 20 deals, +$1,171. ETH puts
+  10 of 10 won (+$2,123); BTC calls 6 of 10 (−$951): the week BTC jumped from 64k
+  to 76k cost a full loss.
 
 ## Dashboard (page/index.html), Ivan's wishes 2026-09-14
 

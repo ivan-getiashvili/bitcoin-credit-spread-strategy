@@ -15,12 +15,13 @@
 import type { Broker } from './broker.ts';
 import { chainFromSummaries, getBookSummaries, getInstrumentSpec, getOrderBook, getRecentDeliveryPrices, MAINNET, TESTNET, type InstrumentSpec, type Option } from './deribit.ts';
 import {
-  advanceJob, LEG, openEntry, openExit, phaseLimitMs, planDailySpread, settleSpread, sizeFor, stopJob,
-  type ExecSettings, type JobContext, type MarketSettings, type Plan, type SpreadRecord,
+  advanceJob, LEG, openEntry, openExit, phaseLimitMs, planSpread, settleSpread, sizeFor, stopJob,
+  type ExecSettings, type JobContext, type MarketSettings, type Plan, type SpreadRecord, type StrategySettings,
 } from './executor.ts';
 import { DOLLAR_MARKETS as M, type MarketId } from './markets.ts';
 import { addSample, dealStats, downsample, equityStatsFromAgg, type EquitySample } from './metrics.ts';
 import { viewSpread } from './monitor.ts';
+import { seedActive, withSeed, type Seed } from './seed.ts';
 import { addEvent, type BotState, type ChainCache, type Sizing } from './state.ts';
 
 export type BotConfig = {
@@ -49,8 +50,10 @@ export type BotConfig = {
   maxOpenSpreads: number;
   /** A spread turns "watch" when price is within this % above the sold put. */
   alertDistancePct: number;
-  /** Daily entry window, UTC. Deribit's options day starts at the 08:00 UTC settlement. */
-  entry: { fromUtc: string; toUtc: string };
+  /** Entry window, UTC, on the given weekdays (0 = Sunday ... 6 = Saturday; every day if absent). Deribit's options day starts at the 08:00 UTC settlement. */
+  entry: { fromUtc: string; toUtc: string; weekdays?: number[] };
+  /** Expiry and strike choice. */
+  strategy: StrategySettings;
   execution: ExecSettings;
   markets: Record<MarketId, MarketSettings>;
   stateFile?: string;
@@ -75,6 +78,8 @@ export type BotDeps = {
   /** Where log lines go besides the dashboard's activity list. */
   logLine?: (msg: string, level: 'info' | 'warn' | 'error') => void;
   now?: () => number;
+  /** Simulated history shown until the real record has enough days (lib/seed.ts). */
+  seed?: Seed;
 };
 
 export const IDS = Object.keys(M) as MarketId[];
@@ -115,16 +120,19 @@ export function createBot(d: BotDeps) {
   };
   const dayKey = () => new Date(now()).toISOString().slice(0, 10);
 
+  const entryDay = (ms: number) => !config.entry.weekdays?.length || config.entry.weekdays.includes(new Date(ms).getUTCDay());
+
   function inEntryWindow(): boolean {
     const t = new Date(now());
     const m = t.getUTCHours() * 60 + t.getUTCMinutes();
-    return m >= minutes(config.entry.fromUtc) && m < minutes(config.entry.toUtc);
+    return entryDay(t.getTime()) && m >= minutes(config.entry.fromUtc) && m < minutes(config.entry.toUtc);
   }
 
   function nextWindow(): { from: string; to: string } {
     const t = new Date(now());
     let day = Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate());
     if (day + minutes(config.entry.toUtc) * 60_000 <= t.getTime()) day += 86_400_000;
+    while (!entryDay(day)) day += 86_400_000;
     return {
       from: new Date(day + minutes(config.entry.fromUtc) * 60_000).toISOString(),
       to: new Date(day + minutes(config.entry.toUtc) * 60_000).toISOString(),
@@ -174,11 +182,12 @@ export function createBot(d: BotDeps) {
    * Only the puts the bot can use, plus the legs of its own spreads. The full chain is
    * megabytes; this keeps the saved state small enough to reload every minute.
    */
-  function slimChain(chain: { options: Option[]; spot: number }): ChainCache {
+  function slimChain(chain: { options: Option[]; spot: number }, type?: 'put' | 'call'): ChainCache {
     const t = now();
     const legs = new Set(activeSpreads().flatMap((s) => [s.shortName, s.longName]));
+    const horizon = (config.strategy.expiry === 'weekly' ? 14 : 8) * 24 * HOUR;
     const options = chain.options.filter((o) => legs.has(o.name) || (
-      o.type === 'put' && o.expiryMs > t && o.expiryMs - t < 8 * 24 * HOUR && o.strike >= chain.spot * 0.6 && o.strike <= chain.spot * 1.2
+      o.type === (type ?? 'put') && o.expiryMs > t && o.expiryMs - t < horizon && o.strike >= chain.spot * 0.6 && o.strike <= chain.spot * 1.4
     ));
     return { at: t, spot: chain.spot, options };
   }
@@ -206,19 +215,23 @@ export function createBot(d: BotDeps) {
 
   async function refreshMarket(id: MarketId, summaries?: unknown[]) {
     const market = M[id];
-    const chain = slimChain(chainFromSummaries(summaries ?? (await getBookSummaries(market.currency, base)), market));
+    const chain = slimChain(chainFromSummaries(summaries ?? (await getBookSummaries(market.currency, base)), market), config.markets[id].structure);
     cache.chains[id] = chain;
     const sma = cache.sma[id];
     if (!sma || now() - sma.at > 30 * 60_000) {
       try {
+        // Newest first. The 50-day average is informational; the ATR sizes the strike distance.
         const prices = Object.entries(await getRecentDeliveryPrices(market.indexName, 60, base))
           .sort(([a], [b]) => (a < b ? 1 : -1))
-          .slice(0, 50)
           .map(([, p]) => p);
-        if (prices.length === 50) cache.sma[id] = { at: now(), value: sum(prices) / 50 };
+        const n = config.strategy.atrDays;
+        const moves = prices.slice(0, n).map((p, i) => Math.abs(p / prices[i + 1] - 1)).filter(Number.isFinite);
+        cache.sma[id] = { at: now(), value: prices.length >= 50 ? sum(prices.slice(0, 50)) / 50 : NaN, atrPct: moves.length === n ? sum(moves) / n : NaN };
       } catch { /* informational only */ }
     }
-    const planned = planDailySpread(market, chain, config.markets[id], now());
+    const dailyAtr = cache.sma[id]?.atrPct ?? NaN;
+    const days = config.strategy.expiry === 'weekly' ? 7 : 1;
+    const planned = planSpread(market, chain, config.markets[id], config.strategy, dailyAtr * Math.sqrt(days), now());
     let size: Sizing | undefined;
     if ('plan' in planned) {
       const spec = await specFor(planned.plan.shortName);
@@ -234,7 +247,7 @@ export function createBot(d: BotDeps) {
         }
       }
     }
-    cache.snaps[id] = { spot: chain.spot, sma50: cache.sma[id]?.value, size, ...('plan' in planned ? { plan: planned.plan } : { skip: planned.skip }) };
+    cache.snaps[id] = { spot: chain.spot, sma50: cache.sma[id]?.value, atrPct: Number.isFinite(dailyAtr) ? dailyAtr * Math.sqrt(days) * 100 : undefined, size, ...('plan' in planned ? { plan: planned.plan } : { skip: planned.skip }) };
     return planned;
   }
 
@@ -476,11 +489,15 @@ export function createBot(d: BotDeps) {
     d.onChange?.();
   }
 
+  /** True while the dashboard still shows the simulated history in front of the real one. */
+  const seedShown = () => seedActive(d.seed, state.equity);
+
   function view() {
     const spreads = state.spreads.map((sp) => viewSpread(M[sp.market], sp, cache.chains[sp.market], config.alertDistancePct, now()));
     const live = spreads.filter((s) => s.live);
     const value = accountValueUsd();
     const usdc = rt.accounts.find((a) => a.currency === 'USDC');
+    const seeded = seedShown() ? withSeed(d.seed!, state.equity, downsample(state.equity?.series ?? [], 600), spreads) : null;
     return {
       mode: config.mode,
       canTrade: Boolean(broker),
@@ -488,6 +505,7 @@ export function createBot(d: BotDeps) {
       accountError: rt.accountError,
       positionWarning: rt.positionWarning,
       entry: { ...config.entry, inWindow: inEntryWindow(), next: nextWindow() },
+      strategy: config.strategy,
       maxOpenSpreads: config.maxOpenSpreads,
       execution: config.execution,
       account: {
@@ -500,8 +518,9 @@ export function createBot(d: BotDeps) {
         unpriced: rt.unpriced,
       },
       totals: { unrealizedUsd: sum(live.map((s) => s.live!.unrealizedUsd)), openRiskUsd: sum(live.map((s) => s.amount * s.maxLossUsd)), open: live.length },
-      metrics: { deals: dealStats(state.spreads), equity: equityStatsFromAgg(state.equity) },
-      series: downsample(state.equity?.series ?? [], 600),
+      metrics: seeded ? { deals: seeded.deals, equity: seeded.equity } : { deals: dealStats(state.spreads), equity: equityStatsFromAgg(state.equity) },
+      series: seeded ? seeded.series : downsample(state.equity?.series ?? [], 600),
+      seeded: seeded?.seeded ?? null,
       positions: rt.positions,
       markets: IDS.map((id) => ({
         id,
@@ -527,7 +546,7 @@ export function createBot(d: BotDeps) {
           error: rt.jobErrors[j.id],
         };
       }),
-      spreads: spreads.reverse(),
+      spreads: (seeded ? seeded.spreads : spreads).reverse(),
       events: state.events.slice(-150).reverse(),
     };
   }
@@ -565,7 +584,7 @@ export function createBot(d: BotDeps) {
       if (workingJobs().some((j) => j.spreadId === sp.id)) return { status: 409, body: { error: 'orders are already working on this spread' } };
       state.jobs.push(openExit(sp, now()));
       d.save();
-      log(`${sp.market}: close started. Limit-buy back ${sp.amount} ${sp.shortName} at the mid first, then limit-sell the long puts`);
+      log(`${sp.market}: close started. Limit-buy back ${sp.amount} ${sp.shortName} at the mid first, then limit-sell ${sp.longName}`);
       await advanceJobs();
       return { status: 200, body: { result: 'started' } };
     },
@@ -583,7 +602,7 @@ export function createBot(d: BotDeps) {
     },
   };
 
-  return { cycle, view, publicView, log, commands };
+  return { cycle, view, publicView, log, commands, seedShown };
 }
 
 export type Bot = ReturnType<typeof createBot>;

@@ -16,6 +16,7 @@ import { createBot, IDS, type BotConfig, type CommandResult } from '../lib/bot.t
 import { DeribitBroker, type Broker } from '../lib/broker.ts';
 import type { MarketId } from '../lib/markets.ts';
 import { addSample } from '../lib/metrics.ts';
+import type { Seed } from '../lib/seed.ts';
 import { appendSample, loadSamples, loadState, saveState } from '../lib/store.ts';
 
 const arg = (name: string) => {
@@ -75,11 +76,15 @@ if (mode === 'testnet') {
 const clients = new Set<ServerResponse>();
 const publicClients = new Set<ServerResponse>();
 
+let seed: Seed | undefined;
+try { seed = JSON.parse(readFileSync('data/seed.json', 'utf8')); } catch { /* no simulated history */ }
+
 const bot = createBot({
   config,
   broker,
   problems,
   state,
+  seed,
   save: () => saveState(stateFile, state),
   onSample: (s) => appendSample(equityFile, s),
   onChange: () => push(),

@@ -13,7 +13,7 @@ import { test } from 'node:test';
 import { putPrice } from '../lib/blackscholes.ts';
 import type { Broker, OrderView, Side } from '../lib/broker.ts';
 import { toTick, type Book, type InstrumentSpec, type Option } from '../lib/deribit.ts';
-import { advanceJob, openEntry, openExit, planDailySpread, settleSpread, sizeFor, stopJob, type ExecSettings, type JobContext, type Plan } from '../lib/executor.ts';
+import { advanceJob, openEntry, openExit, planDailySpread, planSpread, settleSpread, sizeFor, stopJob, type ExecSettings, type JobContext, type Plan } from '../lib/executor.ts';
 import { DOLLAR_MARKETS } from '../lib/markets.ts';
 
 const BTC = DOLLAR_MARKETS.BTC;
@@ -29,7 +29,7 @@ const exec: ExecSettings = { repriceSeconds: 20, maxConcessionPct: 0, buyLongMin
 // Mids: short put $262.50, long put $137.50, strikes $500 apart. After fees the
 // spread collects $84.78 per BTC and can lose $415.22, so $2,000 of risk buys 4.81 BTC.
 const plan: Plan = {
-  market: 'BTC', expiry: '2026-09-14', expiryMs: Date.parse('2026-09-14T08:00:00Z'), hoursToExpiry: 23.9, spot: INDEX,
+  market: 'BTC', type: 'put', expiry: '2026-09-14', expiryMs: Date.parse('2026-09-14T08:00:00Z'), hoursToExpiry: 23.9, spot: INDEX, atrPct: NaN,
   shortName: SHORT, shortStrike: 76500, shortMid: 262.5, longName: LONG, longStrike: 76000, longMid: 137.5,
   creditUsd: 84.78, maxLossUsd: 415.22, lossToCredit: 4.9, distancePct: 0.34, marketWinPct: 45,
 };
@@ -410,4 +410,41 @@ test('plan: the next expiry at least 12 hours away, selling the first strike bel
   assert.equal(p.plan.longStrike, 76_000);
   assert.equal(p.plan.expiryMs, now + 22 * 3_600_000);
   assert.ok(p.plan.creditUsd > 0 && p.plan.maxLossUsd < 500);
+});
+
+test('weekly call spread: sold at least 0.5 ATR above the price on the next Friday, bought two strikes higher, settled on the call side', () => {
+  const now = Date.parse('2026-09-18T08:05:00Z'); // a Friday
+  const spot = 76_764;
+  const fridayMs = Date.parse('2026-09-25T08:00:00Z');
+  const dailyMs = Date.parse('2026-09-19T08:00:00Z');
+  const options: Option[] = [];
+  for (const [expiryMs, expiry] of [[dailyMs, '2026-09-19'], [fridayMs, '2026-09-25']] as const) {
+    for (let k = 74_000; k <= 82_000; k += 500) {
+      const t = (expiryMs - now) / (365 * 86_400_000);
+      const mark = Math.max(spot - k, 0) + 2000 * Math.exp(-(((k - spot) / 3000) ** 2)) * Math.sqrt(t * 52);
+      options.push({ name: `BTC_USDC-${expiry}-${k}-C`, strike: k, expiry, expiryMs, daysToExpiry: (expiryMs - now) / 86_400_000, type: 'call', bid: mark - 20, ask: mark + 20, mark, markIv: 55, openInterest: 1, volume24h: 1, underlying: spot, index: spot });
+    }
+  }
+  const atrPct = 0.042; // 4.2% over the week
+  const r = planSpread(BTC, { options, spot }, { enabled: true, minHoursToExpiry: 12, structure: 'call' }, { expiry: 'weekly', minDaysToExpiry: 5, distanceAtr: 0.5, atrDays: 14, longSteps: 2 }, atrPct, now);
+  assert.ok('plan' in r, JSON.stringify(r));
+  const p = r.plan;
+  assert.equal(p.type, 'call');
+  assert.equal(p.expiry, '2026-09-25');
+  // 0.5 × 4.2% above 76,764 is 78,376: the first listed strike at or above it is 78,500.
+  assert.equal(p.shortStrike, 78_500);
+  assert.equal(p.longStrike, 79_500);
+  assert.ok(p.creditUsd > 0 && p.maxLossUsd > 0 && p.maxLossUsd < 1000);
+
+  // Settlement: below the sold strike the credit is kept; above the bought strike the max loss is paid.
+  const { spread } = openEntry(BTC, p, 1, 1000, 100_000, now);
+  spread.amount = 1; spread.openedAmount = 1; spread.status = 'open';
+  spread.creditUsd = p.creditUsd; spread.maxLossUsd = p.maxLossUsd; spread.cashQuote = p.creditUsd;
+  settleSpread(BTC, spread, 77_000);
+  assert.ok(Math.abs(spread.pnlUsd! - p.creditUsd) < 1e-6, `kept ${spread.pnlUsd}`);
+  const { spread: lost } = openEntry(BTC, p, 1, 1000, 100_000, now);
+  lost.amount = 1; lost.openedAmount = 1; lost.status = 'open'; lost.cashQuote = p.creditUsd;
+  settleSpread(BTC, lost, 81_000);
+  const width = 1000;
+  assert.ok(Math.abs(lost.pnlUsd! - (p.creditUsd - width)) < 25, `lost ${lost.pnlUsd} vs ${p.creditUsd - width} (delivery fees aside)`);
 });

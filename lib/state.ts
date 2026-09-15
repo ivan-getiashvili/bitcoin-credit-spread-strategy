@@ -14,7 +14,7 @@ export type BotEvent = { t: string; level: 'info' | 'warn' | 'error'; msg: strin
 export type Sizing = { amount: number; riskUsd: number; minAmount: number; marginUsd?: number; freeMarginUsd?: number; marginModel?: string };
 
 /** What a coin's dashboard card shows. */
-export type MarketSnap = { spot?: number; sma50?: number; plan?: Plan; skip?: string; error?: string; size?: Sizing };
+export type MarketSnap = { spot?: number; sma50?: number; /** ATR over the expiry's horizon, percent of price. */ atrPct?: number; plan?: Plan; skip?: string; error?: string; size?: Sizing };
 
 /** The part of an option chain the bot uses: nearby puts on the next week's expiries. */
 export type ChainCache = { at: number; spot: number; options: Option[] };
@@ -38,7 +38,7 @@ export type BotRuntime = {
 export type BotCache = {
   chains: Partial<Record<MarketId, ChainCache>>;
   specs: Record<string, InstrumentSpec & { at: number }>;
-  sma: Partial<Record<MarketId, { at: number; value: number }>>;
+  sma: Partial<Record<MarketId, { at: number; value: number; atrPct?: number }>>;
   snaps: Partial<Record<MarketId, MarketSnap>>;
 };
 

@@ -33,11 +33,27 @@ const HOUR = 3_600_000;
 const EPS = 1e-9;
 const r8 = (x: number) => Math.round(x * 1e8) / 1e8;
 
+export type OptionType = 'put' | 'call';
+
 export type MarketSettings = {
   /** Trade this coin unless it is switched off on the dashboard. */
   enabled: boolean;
   /** Skip expiries closer than this. At the 08:05 UTC entry the next daily is ~24 hours away. */
   minHoursToExpiry: number;
+  /** Sell a put spread below the price, or a call spread above it. Default put. */
+  structure?: OptionType;
+};
+
+/** How the strikes and the expiry are chosen (BotConfig.strategy). */
+export type StrategySettings = {
+  /** 'daily': the nearest expiry at least minHoursToExpiry away. 'weekly': the nearest Friday at least minDaysToExpiry days away. */
+  expiry: 'daily' | 'weekly';
+  minDaysToExpiry?: number;
+  /** Sold strike at least this many ATRs from the price, where ATR is the mean absolute daily move scaled to the expiry's horizon. 0 = the first strike out. */
+  distanceAtr: number;
+  atrDays: number;
+  /** The bought strike is this many listed strikes further out. */
+  longSteps: number;
 };
 
 export type ExecSettings = {
@@ -68,6 +84,7 @@ export type ExecSettings = {
 
 export type Plan = {
   market: MarketId;
+  type: OptionType;
   expiry: string;
   expiryMs: number;
   hoursToExpiry: number;
@@ -83,8 +100,10 @@ export type Plan = {
   creditUsd: number;
   maxLossUsd: number;
   lossToCredit: number;
-  /** How far below the price the sold put sits, percent. */
+  /** How far from the price the sold strike sits, percent (below for puts, above for calls). */
   distancePct: number;
+  /** The ATR the distance was measured in, percent of price over the expiry's horizon; NaN when unknown. */
+  atrPct: number;
   /** The market's own odds of finishing above breakeven. */
   marketWinPct: number;
 };
@@ -94,6 +113,8 @@ export type Fill = { t: string; orderId: string; side: Side; instrument: string;
 export type SpreadRecord = {
   id: string;
   market: MarketId;
+  /** Absent in records from before call spreads existed: a put spread. */
+  type?: OptionType;
   expiry: string;
   expiryMs: number;
   openedAt: string;
@@ -132,6 +153,8 @@ export type SpreadRecord = {
   settlePrice?: number;
   /** Realised P&L in dollars, once closed or settled. */
   pnlUsd?: number;
+  /** A seed deal from simulated history (lib/seed.ts), never a real position. */
+  simulated?: boolean;
 };
 
 export type Phase = 'buy-long' | 'sell-short' | 'buy-short' | 'sell-long' | 'done';
@@ -181,31 +204,55 @@ const midOf = (bid: number | null | undefined, ask: number | null | undefined, m
   bid && ask && bid > 0 && ask > 0 ? (bid + ask) / 2 : mark;
 const px = (x: number) => `${+x.toFixed(6)}`;
 
-/** Today's spread: buy the put at the second strike below the price, sell the put at the first. */
+/** Today's daily put spread: buy the put at the second strike below the price, sell the put at the first. */
 export function planDailySpread(market: Market, chain: { options: Option[]; spot: number }, s: MarketSettings, now = Date.now()): { plan: Plan } | { skip: string } {
-  const spot = chain.spot;
-  const puts = chain.options.filter((o) => o.type === 'put' && o.mark > 0);
-  const hours = (e: number) => (e - now) / HOUR;
-  const expiryMs = [...new Set(puts.map((o) => o.expiryMs))].filter((e) => hours(e) >= s.minHoursToExpiry).sort((a, b) => a - b)[0];
-  if (!expiryMs) return { skip: `no expiry at least ${s.minHoursToExpiry} hours away` };
+  return planSpread(market, chain, { ...s, structure: 'put' }, { expiry: 'daily', distanceAtr: 0, atrDays: 14, longSteps: 1 }, NaN, now);
+}
 
-  const below = puts.filter((o) => o.expiryMs === expiryMs && o.strike < spot).sort((a, b) => b.strike - a.strike);
-  const [short, long] = below;
-  if (!short || !long) return { skip: 'fewer than two strikes below the price on this expiry' };
+const isFridayMs = (ms: number) => new Date(ms).getUTCDay() === 5;
+
+/**
+ * The spread to sell now. The sold strike is the first listed strike at least `distanceAtr`
+ * ATRs from the price (below for a put spread, above for a call spread); the bought strike is
+ * `longSteps` listed strikes further out. `atrPct` is the ATR over the expiry's horizon as a
+ * share of the price (e.g. 0.042 for 4.2%); NaN means unknown, which is only acceptable when
+ * distanceAtr is 0.
+ */
+export function planSpread(market: Market, chain: { options: Option[]; spot: number }, s: MarketSettings, st: StrategySettings, atrPct: number, now = Date.now()): { plan: Plan } | { skip: string } {
+  const spot = chain.spot;
+  const type: OptionType = s.structure ?? 'put';
+  const legs = chain.options.filter((o) => o.type === type && o.mark > 0);
+  const hours = (e: number) => (e - now) / HOUR;
+  const expiries = [...new Set(legs.map((o) => o.expiryMs))].sort((a, b) => a - b);
+  const expiryMs = st.expiry === 'weekly'
+    ? expiries.filter((e) => isFridayMs(e) && hours(e) >= (st.minDaysToExpiry ?? 5) * 24)[0]
+    : expiries.filter((e) => hours(e) >= s.minHoursToExpiry)[0];
+  if (!expiryMs) return { skip: st.expiry === 'weekly' ? `no Friday expiry at least ${st.minDaysToExpiry ?? 5} days away` : `no expiry at least ${s.minHoursToExpiry} hours away` };
+  if (st.distanceAtr > 0 && !(atrPct > 0)) return { skip: 'the daily range (ATR) is not known yet' };
+
+  // Strikes on this expiry, walking away from the price: down for puts, up for calls.
+  const distance = st.distanceAtr > 0 ? st.distanceAtr * atrPct : 0;
+  const edge = type === 'put' ? spot * (1 - distance) : spot * (1 + distance);
+  const away = legs.filter((o) => o.expiryMs === expiryMs && (type === 'put' ? o.strike < spot && o.strike <= edge : o.strike > spot && o.strike >= edge))
+    .sort((a, b) => (type === 'put' ? b.strike - a.strike : a.strike - b.strike));
+  const short = away[0];
+  const long = away[st.longSteps];
+  if (!short || !long) return { skip: `fewer than ${st.longSteps + 1} listed strikes ${type === 'put' ? 'below' : 'above'} ${distance ? `${(100 * distance).toFixed(2)}% from ` : ''}the price on this expiry` };
 
   const shortMid = midOf(short.bid, short.ask, short.mark);
   const longMid = midOf(long.bid, long.ask, long.mark);
   const credit = shortMid - longMid - feeQuote(market, shortMid, spot) - feeQuote(market, longMid, spot);
-  const width = short.strike - long.strike;
+  const width = Math.abs(short.strike - long.strike);
   const creditUsd = toUsd(market, credit, spot);
   const maxLossUsd = inverse(market) ? width - credit * long.strike : width - credit;
   if (!(creditUsd > 0)) return { skip: `the ${short.strike}/${long.strike} spread pays nothing after fees at mid prices` };
 
   const t = hours(expiryMs) / (24 * 365);
-  const be = short.markIv ? bs(spot, short.strike - creditUsd, t, short.markIv / 100, 'put') : null;
+  const be = short.markIv ? bs(spot, type === 'put' ? short.strike - creditUsd : short.strike + creditUsd, t, short.markIv / 100, type) : null;
   return {
     plan: {
       market: market.id,
+      type,
       expiry: short.expiry,
       expiryMs,
       hoursToExpiry: hours(expiryMs),
@@ -219,7 +266,8 @@ export function planDailySpread(market: Market, chain: { options: Option[]; spot
       creditUsd,
       maxLossUsd,
       lossToCredit: maxLossUsd / creditUsd,
-      distancePct: (1 - short.strike / spot) * 100,
+      distancePct: Math.abs(1 - short.strike / spot) * 100,
+      atrPct: atrPct > 0 ? atrPct * 100 : NaN,
       marketWinPct: be ? (1 - be.probItm) * 100 : NaN,
     },
   };
@@ -240,13 +288,14 @@ export function sizeFor(plan: Plan, riskUsd: number, spec: InstrumentSpec, slack
 
 export function openEntry(market: Market, plan: Plan, amount: number, riskUsd: number, accountUsd: number, now: number): { spread: SpreadRecord; job: Job } {
   const id = `${market.id}-${plan.expiry}-${now.toString(36)}`;
-  const width = plan.shortStrike - plan.longStrike;
+  const width = Math.abs(plan.shortStrike - plan.longStrike);
   const budgetPerUnit = riskUsd / amount;
   // Inverse: max loss = width - credit x longStrike. Linear: width - credit.
   const minCreditQuote = Math.max(0, inverse(market) ? (width - budgetPerUnit) / plan.longStrike : width - budgetPerUnit);
   const spread: SpreadRecord = {
     id,
     market: market.id,
+    type: plan.type,
     expiry: plan.expiry,
     expiryMs: plan.expiryMs,
     openedAt: new Date(now).toISOString(),
@@ -383,7 +432,7 @@ function resizeToBudget(spread: SpreadRecord, creditQuote: number, spec: Instrum
   const m = ctx.market;
   // A spread that collects nothing is not the strategy at any size.
   if (!(creditQuote > 0)) return null;
-  const width = spread.shortStrike - spread.longStrike;
+  const width = Math.abs(spread.shortStrike - spread.longStrike);
   const maxLossUsd = inverse(m) ? width - creditQuote * spread.longStrike : width - creditQuote;
   if (!(maxLossUsd > 0)) return null;
   const step = spec.minAmount;
@@ -429,7 +478,7 @@ function bookEntryRisk(spread: SpreadRecord, ctx: JobContext): void {
   const longAvg = avgFill(spread, 'buy', spread.longName);
   const shortAvg = avgFill(spread, 'sell', spread.shortName);
   const credit = shortAvg - longAvg - feeQuote(ctx.market, shortAvg, index) - feeQuote(ctx.market, longAvg, index);
-  const width = spread.shortStrike - spread.longStrike;
+  const width = Math.abs(spread.shortStrike - spread.longStrike);
   spread.creditUsd = toUsd(ctx.market, credit, index);
   spread.maxLossUsd = inverse(ctx.market) ? width - credit * spread.longStrike : width - credit;
   spread.lossToCredit = spread.maxLossUsd / spread.creditUsd;
@@ -625,8 +674,9 @@ export function settleSpread(market: Market, spread: SpreadRecord, settle: numbe
   const unit = (usd: number) => (inv ? usd / settle : usd);
   const fee = (intrinsicUsd: number) =>
     intrinsicUsd > 0 ? Math.min(inv ? FEES.delivery : FEES.delivery * settle, FEES.capShare * unit(intrinsicUsd)) : 0;
-  const shortIntrinsic = Math.max(spread.shortStrike - settle, 0);
-  const longIntrinsic = Math.max(spread.longStrike - settle, 0);
+  const call = spread.type === 'call';
+  const shortIntrinsic = Math.max(call ? settle - spread.shortStrike : spread.shortStrike - settle, 0);
+  const longIntrinsic = Math.max(call ? settle - spread.longStrike : spread.longStrike - settle, 0);
   const longQty = spread.amount + spread.spareLong;
   spread.cashQuote += -spread.amount * (unit(shortIntrinsic) + fee(shortIntrinsic)) + longQty * (unit(longIntrinsic) - fee(longIntrinsic));
   spread.pnlUsd = toUsd(market, spread.cashQuote, settle);

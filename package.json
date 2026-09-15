@@ -18,11 +18,12 @@
     "wing-test": "node --experimental-strip-types scripts/wing-test.ts",
     "liquidity": "node --experimental-strip-types scripts/liquidity.ts",
     "atr": "node --experimental-strip-types scripts/atr-search.ts",
+    "seed": "node --experimental-strip-types scripts/seed.ts",
     "backtest": "node --experimental-strip-types scripts/backtest.ts",
     "bot": "node --experimental-strip-types scripts/bot.ts",
     "worker:dev": "wrangler dev --test-scheduled",
     "worker:bundle": "wrangler deploy --dry-run --outdir dist",
-    "test": "node --experimental-strip-types --test test/executor.test.ts test/metrics.test.ts test/equity-agg.test.ts"
+    "test": "node --experimental-strip-types --test test/executor.test.ts test/metrics.test.ts test/equity-agg.test.ts test/seed.test.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260914.1",

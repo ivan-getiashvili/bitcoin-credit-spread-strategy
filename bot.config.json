@@ -11,7 +11,8 @@
   "sizingSlackPct": 5,
   "maxOpenSpreads": 3,
   "alertDistancePct": 0.5,
-  "entry": { "fromUtc": "08:05", "toUtc": "10:00" },
+  "entry": { "fromUtc": "08:05", "toUtc": "10:00", "weekdays": [5] },
+  "strategy": { "expiry": "weekly", "minDaysToExpiry": 5, "distanceAtr": 0.5, "atrDays": 14, "longSteps": 2 },
   "execution": {
     "repriceSeconds": 20,
     "maxConcessionPct": 0,
@@ -22,8 +23,8 @@
     "unwindMinutes": 15
   },
   "markets": {
-    "BTC": { "enabled": true, "minHoursToExpiry": 12 },
-    "ETH": { "enabled": true, "minHoursToExpiry": 12 },
-    "SOL": { "enabled": true, "minHoursToExpiry": 12 }
+    "BTC": { "enabled": true, "minHoursToExpiry": 12, "structure": "call" },
+    "ETH": { "enabled": true, "minHoursToExpiry": 12, "structure": "put" },
+    "SOL": { "enabled": false, "minHoursToExpiry": 12, "structure": "put" }
   }
 }
