@@ -28,18 +28,23 @@ const arg = (name: string, fallback: string) => {
   const i = process.argv.indexOf(`--${name}`);
   return i > 0 ? process.argv[i + 1] : fallback;
 };
-const coins = arg('coins', 'BTC,ETH').split(',') as MarketId[];
+const coins = arg('coins', 'BTC,ETH,SOL').split(',') as MarketId[];
+/** Settings with more modelled legs than this are dropped: a formula price for a far-out option is not a price anyone was offered. */
+const MAX_MODELLED_PCT = Number(arg('maxModelled', '25'));
 const DAY = 86_400_000;
 const YEAR = 365 * DAY;
 const ATR_DAYS = 14;
 const IS_END = '2025-12-31';
 const CAPITAL = 100_000;
 const RISK = 0.01 * 0.95;
-const MIN_TRADES = { daily: 100, weekly: 40, monthly: 12 };
-const MIN_PRICE: Record<string, number> = { BTC: 5, ETH: 0.5 };
+const MIN_TRADES = { daily: 60, weekly: 25, monthly: 8 };
+const MIN_PRICE: Record<string, number> = { BTC: 5, ETH: 0.5, SOL: 0.1 };
 const K = [0, 0.5, 1, 1.5, 2];
 const LONGS: { label: string; steps?: number; atr?: number }[] = [{ label: '1 strike', steps: 1 }, { label: '2 strikes', steps: 2 }, { label: '+1 ATR', atr: 1 }];
-type Structure = 'put spread' | 'call spread' | 'iron condor';
+/** The first three are sold (credit); the last three are the same spreads bought (debit): Ivan's "flip". */
+type Structure = 'put spread' | 'call spread' | 'iron condor' | 'buy put spread' | 'buy call spread' | 'reverse condor';
+const STRUCTURES: Structure[] = ['put spread', 'call spread', 'iron condor', 'buy put spread', 'buy call spread', 'reverse condor'];
+const bought = (st: Structure) => st.startsWith('buy') || st === 'reverse condor';
 type Class = 'daily' | 'weekly' | 'monthly';
 
 type Quote = { strike: number; mid: number; bid?: number; ask?: number; iv: number };
@@ -156,7 +161,8 @@ for (const id of coins) {
     const isN = prepared.filter((p) => p.date <= IS_END).length;
     console.log(`\n--- ${cls}: ${prepared.length} entries (${isN} in-sample, ${prepared.length - isN} in 2026), median horizon ATR ${f(100 * median(prepared.map((p) => p.atrH)), 2)}%, median strike step ${median(prepared.map((p) => p.step))} ---`);
 
-    for (const structure of ['put spread', 'call spread', 'iron condor'] as Structure[]) {
+    for (const structure of STRUCTURES) {
+      const flip = bought(structure);
       for (const fill of ['mid', 'cross'] as const) {
         for (const k of K) {
           for (const long of LONGS) {
@@ -180,37 +186,50 @@ for (const id of coins) {
                 const further = long.steps ? long.steps * p.step : Math.max(p.step, Math.round((p.atrH * long.atr! * p.spot) / p.step) * p.step);
                 const lng = type === 'put' ? short - further : short + further;
                 const book = type === 'put' ? p.puts : p.calls;
-                const s = price(book, type, short, 'sell');
-                const l = price(book, type, lng, 'buy');
+                // Sold: sell the near strike, buy the far one. Bought (the flip): the other way round.
+                const s = price(book, type, short, flip ? 'buy' : 'sell');
+                const l = price(book, type, lng, flip ? 'sell' : 'buy');
                 if (!s || !l) return null;
                 const fee = takerFee(s.p, p.spot) + takerFee(l.p, p.spot);
-                const gross = s.p - l.p;
+                // Credit received (sold) or debit paid (bought), before fees; both positive.
+                const gross = flip ? s.p - l.p : s.p - l.p;
                 const width = Math.abs(short - lng);
                 const si = type === 'put' ? Math.max(short - p.settle, 0) : Math.max(p.settle - short, 0);
                 const li = type === 'put' ? Math.max(lng - p.settle, 0) : Math.max(p.settle - lng, 0);
+                // What the sold spread pays out at settlement (the bought spread receives it), delivery fees included.
                 const settleCost = si - li + deliveryFee(p.expiry, si, p.settle) + deliveryFee(p.expiry, li, p.settle);
                 return { gross, fee, width, settleCost, modelled: !s.real || !l.real };
               };
-              const wings = structure === 'put spread' ? [wing('put')] : structure === 'call spread' ? [wing('call')] : [wing('put'), wing('call')];
+              const wings = structure === 'put spread' || structure === 'buy put spread' ? [wing('put')] : structure === 'call spread' || structure === 'buy call spread' ? [wing('call')] : [wing('put'), wing('call')];
               if (wings.some((w) => !w)) continue;
               const gross = sum(wings.map((w) => w!.gross));
               const fee = sum(wings.map((w) => w!.fee));
+              const widest = Math.max(...wings.map((w) => w!.width));
+              if (!(gross > 0)) continue;
+              if (flip) {
+                // Bought: the most it can lose is the debit plus fees; it wins what the seller pays out.
+                const debit = gross + fee;
+                if (debit > 0.8 * widest) { implausible++; continue; }
+                trades.push({ entry: p.date, expiry: p.expiry, pnl: sum(wings.map((w) => w!.settleCost)) - debit, maxLoss: debit, credit: -debit, gross, fee, modelled: wings.some((w) => w!.modelled) });
+                continue;
+              }
               const credit = gross - fee;
               // Only one wing can finish in the money, so the condor risks its wider wing minus the whole credit.
-              const maxLoss = Math.max(...wings.map((w) => w!.width)) - credit;
+              const maxLoss = widest - credit;
               if (!(credit > 0) || !(maxLoss > 0)) continue;
               // A credit above 60% of the width is a mispriced leg, not a trade anyone was offered.
-              if (credit > 0.6 * Math.max(...wings.map((w) => w!.width))) { implausible++; continue; }
+              if (credit > 0.6 * widest) { implausible++; continue; }
               trades.push({ entry: p.date, expiry: p.expiry, pnl: credit - sum(wings.map((w) => w!.settleCost)), maxLoss, credit, gross, fee, modelled: wings.some((w) => w!.modelled) });
             }
             if (trades.length < MIN_TRADES[cls]) continue;
+            if ((100 * trades.filter((t) => t.modelled).length) / trades.length > MAX_MODELLED_PCT) continue;
             if (implausible) skippedImplausible += implausible;
             const is = stats(trades, '2024-01-01', IS_END);
             const oos = stats(trades, '2026-01-01', '2026-12-31');
             rows.push({
               structure, fill, 'sold at': k ? `${k} × ATR` : 'first strike out', 'bought': long.label, trades: trades.length,
               'modelled %': f((100 * trades.filter((t) => t.modelled).length) / trades.length, 0),
-              'fees % credit': f(100 * median(trades.map((t) => t.fee / t.gross)), 0), 'loss:credit': f(median(trades.map((t) => t.maxLoss / t.credit)), 1),
+              'fees % credit': f(100 * median(trades.map((t) => t.fee / t.gross)), 0), 'loss:credit': flip ? '-' : f(median(trades.map((t) => t.maxLoss / t.credit)), 1),
               'IS win %': f(is.winPct, 0), 'IS %/deal': f(is.avgPct, 3), 'IS PF': f(is.pf), 'IS Sharpe': f(is.sharpe),
               'OOS n': oos.n, 'OOS win %': f(oos.winPct, 0), 'OOS %/deal': f(oos.avgPct, 3), 'OOS PF': f(oos.pf), 'OOS Sharpe': f(oos.sharpe), 'OOS maxDD %': f(oos.maxDdPct, 1),
             });
@@ -220,7 +239,7 @@ for (const id of coins) {
     }
     const compact = ({ structure, fill, ...r }: Record<string, string | number>) => ({ structure, fill, 'sold at': r['sold at'], bought: r.bought, n: r.trades, 'model%': r['modelled %'], 'fee%': r['fees % credit'], 'L:C': r['loss:credit'], 'IS win%': r['IS win %'], 'IS PF': r['IS PF'], 'IS Sh': r['IS Sharpe'], 'OOS n': r['OOS n'], 'OOS %/deal': r['OOS %/deal'], 'OOS PF': r['OOS PF'], 'OOS Sh': r['OOS Sharpe'], 'OOS DD%': r['OOS maxDD %'] });
     const shown: Record<string, string | number>[] = [];
-    for (const structure of ['put spread', 'call spread', 'iron condor'] as Structure[]) {
+    for (const structure of STRUCTURES) {
       const mid = rows.filter((r) => r.structure === structure && r.fill === 'mid').sort((a, b) => Number(b['IS Sharpe']) - Number(a['IS Sharpe']));
       if (!mid.length) continue;
       const naive = mid.find((r) => r['sold at'] === 'first strike out' && r.bought === '1 strike');

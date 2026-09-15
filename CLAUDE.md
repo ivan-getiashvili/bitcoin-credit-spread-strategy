@@ -420,6 +420,22 @@ delivery fees on Fridays. Ranked in-sample (to 2025-12-31), judged on 2026.
   the credit. Not evidence either way.
 - **Weekly ATR distances:** BTC median 7-day ATR 4.2% of price, ETH 6.1%; 0.5 × ATR
   is ~2-3% away, 1 × ATR ~4-6%.
+- **Ivan's flip (2026-09-15): buy the same spreads instead of selling them**
+  (`buy put spread`, `buy call spread`, `reverse condor`; a bought spread already
+  has capped risk, no extra legs). Results are only trusted where ≥75% of the legs
+  were real trades (`--maxModelled 25`): far-out options rarely trade, the formula
+  price ignores skew and made bought wings look absurdly cheap (thousands of
+  percent per deal before the cap).
+  - Daily: sellers 0 settings; buyers a handful, small, with 15-55% drawdowns
+    (ETH buy put spread 0.5 × ATR / 2 strikes: 2026 +0.37%/deal, PF 1.5, DD 22%).
+  - Weekly: buyers ~0; sellers as before (ETH puts/calls, BTC calls).
+  - Monthly: BTC buy call 8 of 10 settings, ETH buy put 3 of 6 - but 22 + 7 entries,
+    meaningless.
+  - A bought spread pays the same two fees, so the flip does not turn the seller's
+    fee problem into a buyer's edge; only the weekly seller shows a consistent edge.
+- **SOL cannot be tested on real prices:** its dailies barely trade on the real
+  exchange in the morning window, so almost no setting has real prices for both
+  legs (daily: none; weekly: 2-3 settings, none profitable in both periods).
 - **What a switch would need in the bot:** Friday entries with the next-Friday
   expiry, ATR from `getRecentDeliveryPrices`, strike choice by distance, and call
   support in the executor (plan, leg order with the protective leg first, settlement
