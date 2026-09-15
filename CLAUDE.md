@@ -393,6 +393,38 @@ judged on 2026. 84 settings per coin.
   (fixed fees vs one day of premium). Next thing worth testing: the same
   ATR-distance idea on the weekly expiry, where premium per leg fee is ~2.6×.
 
+## Structure study: calls, iron condors, weekly and monthly (`npm run structures`, 2026-09-15)
+
+Data: `npm run history:tapes` (puts AND calls, 08:00-10:00 UTC each morning, strikes
+within 15% of the price, expiries ≤3 days, 6-8 days and 27-36 days; 921 mornings
+per coin, 146 MB). Entries: daily every morning; weekly every Friday for the next
+Friday; monthly the last Friday of each month for the next month's. Strikes k × ATR14
+× √days away (k = 0 is "first strike out"); bought leg 1-2 strikes or +1 ATR further.
+Untraded legs are Black-76 at the nearest traded strike's volatility; a credit above
+60% of the width is treated as a mispriced leg and skipped. 1% risk, 5% slack, fees,
+delivery fees on Fridays. Ranked in-sample (to 2025-12-31), judged on 2026.
+
+- **Daily: nothing works, in any structure.** Put spread 1 of 30 settings profitable
+  in both periods (2 × ATR, 1 strike, at bid/ask: +0.003%/deal, noise); call spread
+  0/30; iron condor 0/30. The naive daily condor is the worst thing tested (35% wins,
+  −0.21%/deal in 2026, 37% drawdown). Fees are 20-46% of the credit.
+- **Weekly is where the edge appears.** Fees drop to 3-12% of the credit at 0.5-1 ×
+  ATR. Settings profitable in-sample AND in 2026 at bid/ask fills: BTC put 1/30,
+  call 5/30, condor 1/26; ETH put 6/30, call 8/30, condor 3/26. The one rule that is
+  positive for BOTH coins at bid/ask: **call spread sold 0.5 × ATR above the price,
+  bought 1 ATR further** (BTC IS PF 1.14 / 2026 PF 1.25; ETH 1.19 / 1.53), and the
+  iron condor at the same distances (BTC 1.10 / 1.03, ETH 1.02 / 1.06). ETH weekly
+  put spreads at 0.5-1.5 × ATR are the strongest single group (2026 PF 1.3-2.9).
+  Caveat: 95 in-sample and ~30 out-of-sample weeks; 11-46% of legs modelled.
+- **Monthly: too few entries to conclude** (22 in-sample, 7 in 2026). Fees 1-5% of
+  the credit. Not evidence either way.
+- **Weekly ATR distances:** BTC median 7-day ATR 4.2% of price, ETH 6.1%; 0.5 × ATR
+  is ~2-3% away, 1 × ATR ~4-6%.
+- **What a switch would need in the bot:** Friday entries with the next-Friday
+  expiry, ATR from `getRecentDeliveryPrices`, strike choice by distance, and call
+  support in the executor (plan, leg order with the protective leg first, settlement
+  and monitoring are put-only today). Ivan has not decided (2026-09-15).
+
 ## Hard rules for code
 
 1. **Limit orders only.** Post-only at the mid first; after `takeMinutes` a leg may
