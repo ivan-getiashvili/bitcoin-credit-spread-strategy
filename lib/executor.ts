@@ -132,8 +132,6 @@ export type SpreadRecord = {
   settlePrice?: number;
   /** Realised P&L in dollars, once closed or settled. */
   pnlUsd?: number;
-  /** A seed deal from simulated history (lib/seed.ts), never a real position. */
-  simulated?: boolean;
 };
 
 export type Phase = 'buy-long' | 'sell-short' | 'buy-short' | 'sell-long' | 'done';

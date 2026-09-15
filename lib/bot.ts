@@ -21,7 +21,6 @@ import {
 import { DOLLAR_MARKETS as M, type MarketId } from './markets.ts';
 import { addSample, dealStats, downsample, equityStatsFromAgg, type EquitySample } from './metrics.ts';
 import { viewSpread } from './monitor.ts';
-import { seedActive, withSeed, type Seed } from './seed.ts';
 import { addEvent, type BotState, type ChainCache, type Sizing } from './state.ts';
 
 export type BotConfig = {
@@ -76,8 +75,6 @@ export type BotDeps = {
   /** Where log lines go besides the dashboard's activity list. */
   logLine?: (msg: string, level: 'info' | 'warn' | 'error') => void;
   now?: () => number;
-  /** Simulated history shown until the real record has enough days (lib/seed.ts). */
-  seed?: Seed;
 };
 
 export const IDS = Object.keys(M) as MarketId[];
@@ -479,15 +476,11 @@ export function createBot(d: BotDeps) {
     d.onChange?.();
   }
 
-  /** True while the dashboard still shows the simulated history in front of the real one. */
-  const seedShown = () => seedActive(d.seed, state.equity);
-
   function view() {
     const spreads = state.spreads.map((sp) => viewSpread(M[sp.market], sp, cache.chains[sp.market], config.alertDistancePct, now()));
     const live = spreads.filter((s) => s.live);
     const value = accountValueUsd();
     const usdc = rt.accounts.find((a) => a.currency === 'USDC');
-    const seeded = seedShown() ? withSeed(d.seed!, state.equity, downsample(state.equity?.series ?? [], 600), spreads) : null;
     return {
       mode: config.mode,
       canTrade: Boolean(broker),
@@ -507,9 +500,8 @@ export function createBot(d: BotDeps) {
         unpriced: rt.unpriced,
       },
       totals: { unrealizedUsd: sum(live.map((s) => s.live!.unrealizedUsd)), openRiskUsd: sum(live.map((s) => s.amount * s.maxLossUsd)), open: live.length },
-      metrics: seeded ? { deals: seeded.deals, equity: seeded.equity } : { deals: dealStats(state.spreads), equity: equityStatsFromAgg(state.equity) },
-      series: seeded ? seeded.series : downsample(state.equity?.series ?? [], 600),
-      seeded: seeded?.seeded ?? null,
+      metrics: { deals: dealStats(state.spreads), equity: equityStatsFromAgg(state.equity) },
+      series: downsample(state.equity?.series ?? [], 600),
       positions: rt.positions,
       markets: IDS.map((id) => ({
         id,
@@ -535,7 +527,7 @@ export function createBot(d: BotDeps) {
           error: rt.jobErrors[j.id],
         };
       }),
-      spreads: (seeded ? seeded.spreads : spreads).reverse(),
+      spreads: spreads.reverse(),
       events: state.events.slice(-150).reverse(),
     };
   }
@@ -591,7 +583,7 @@ export function createBot(d: BotDeps) {
     },
   };
 
-  return { cycle, view, publicView, log, commands, seedShown };
+  return { cycle, view, publicView, log, commands };
 }
 
 export type Bot = ReturnType<typeof createBot>;
