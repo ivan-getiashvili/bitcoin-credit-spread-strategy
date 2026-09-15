@@ -1,7 +1,7 @@
 # Credit Spread Strategy: BTC, ETH, SOL
 
-Trades a daily bull put spread (buy a put, sell a higher-strike put) on Deribit's
-dollar-settled options, with a live monitoring dashboard. Also holds the earlier
+Sells weekly credit spreads (a put spread on ETH, a call spread on BTC) on Deribit's
+dollar-settled options, with a live monitoring dashboard at https://cryptospread.trade. Also holds the earlier
 research and backtest. Owner: Ivan. Explain concepts when introducing them.
 
 Part of `~/projects/algorithmic-trading-strategies/`.
@@ -32,9 +32,10 @@ Part of `~/projects/algorithmic-trading-strategies/`.
    thinnest on the test exchange).
 6. **Real exchange, not a simulation:** the Deribit test exchange, with trades
    visible in the account.
-7. **Limit orders only**, entries and exits. Never pay the spread.
-8. **Buy the long put first**, then sell the short. When closing, buy the short
-   back first.
+7. **Limit orders only**, entries and exits. At the mid first; after 15 minutes a leg
+   may cross to the other side of the book, never past the risk budget.
+8. **Buy the protective leg first** (the lower put, or the higher call), then sell
+   the short one. When closing, buy the short back first.
 9. **Live monitoring:**
    - equity curve, positions, unrealised P&L
    - deals, wins, losses, win rate
@@ -105,30 +106,6 @@ Part of `~/projects/algorithmic-trading-strategies/`.
       the GitHub Pages copy and the server/tunnel files were removed on 2026-09-14.
     - **Never run `npm run bot`** (the local runner) against the same account while
       the Worker has keys: both would trade.
-
-## Simulated history in front of the real one (`lib/seed.ts`, 2026-09-14)
-
-Ivan did not want to wait seven days for Sharpe, Sortino and drawdown, so the
-dashboard shows a seed: the current strategy run on real morning prices for the 8
-days before launch, sized like the live bot (1%, 5% slack, mid fills, fees).
-- `npm run seed -- --to 2026-09-13 --days 8` writes `data/seed.json` from the cached
-  daily history. Refresh the cache first: `npm run history:daily -- --from <date>
-  --markets BTC,ETH,SOL`.
-- **SOL is thin:** on the real exchange its daily puts traded on only 4 of the 8
-  mornings, and one thin morning reconstructed as a 96/92 spread on a $1 grid, so
-  the seed keeps only SOL days on the real grid (`GRID` in scripts/seed.ts): two
-  deals, both full losses (9 and 10 Sep).
-- On Cloudflare the seed is the D1 `kv` row `seed` (uploaded through the
-  connector with a parameterised query); locally it is `data/seed.json`.
-- `withSeed` shifts the seed curve so its last close lands on the real curve's
-  first sample, prepends its 8 daily closes to the stats and the chart, and adds
-  its 14 settled deals (marked `simulated: true`) to the deal stats and the table.
-  The page labels every simulated day and deal and explains it under the chart.
-- **It drops out by itself** once the real record has 8 daily closes (7 returns):
-  `seedActive` turns false, the Worker deletes the row and logs it.
-- Seed result (6-13 Sep): BTC −$2,121 over 8 deals, ETH +$1,428 over 6, SOL
-  −$1,937 over 2, total −$2,630. Friday expiries pay delivery fees, so a full loss
-  there slightly exceeds the budget (−$1,024 on 11 Sep).
 
 ## Simulated history in front of the real one (`lib/seed.ts`, back on 2026-09-15)
 
