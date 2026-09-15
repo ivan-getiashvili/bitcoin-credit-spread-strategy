@@ -223,7 +223,12 @@ Ivan asked for it on 2026-09-13 so the exchange treats the spread as one positio
 - Daily expiries at 08:00 UTC. Settlement indexes are `btc_usdc`, `eth_usdc` and
   `sol_usdc`.
 - Fees are 0.03% of the underlying per leg (maker = taker), capped at 12.5% of the
-  price. Delivery is 0.015%.
+  price. Delivery is 0.015% of the settlement price per in-the-money leg, **except
+  on BTC and ETH daily expiries, which pay none** (Deribit's transaction log,
+  2026-09-15: zero on the BTC daily, 0.015% on the SOL daily). `settleSpread`
+  applies that rule since 2026-09-15; the BTC daily settled that morning was
+  recorded $53.56 too pessimistic (−$1,043.68 in the state, −$990.12 at Deribit)
+  and the correction of the D1 row was not permitted from this session.
 - On a daily BTC spread fees are a large share of the credit. For example, $262.50
   and $137.50 mids pay $125 before fees and $85 after.
 

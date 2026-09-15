@@ -369,7 +369,7 @@ test('after a restart mid-placement, the order is found by its label instead of 
   assert.equal(job.order?.label, `${spread.id}-BL1`);
 });
 
-test('settlement in dollars: a win keeps the credit; a crash loses the max loss plus delivery fees', async () => {
+test('settlement in dollars: a win keeps the credit; a crash loses exactly the max loss on a BTC daily, plus delivery fees on a Friday', async () => {
   for (const settle of [77_000, 70_000]) {
     const { ex, step, spread } = setup();
     await step();
@@ -381,9 +381,21 @@ test('settlement in dollars: a win keeps the credit; a crash loses the max loss 
     const credit = spread.cashQuote;
     settleSpread(BTC, spread, settle);
     assert.equal(spread.status, 'settled');
+    // 2026-09-14 is a Monday: a BTC daily, which Deribit settles without a delivery fee.
     if (settle > spread.shortStrike) assert.ok(Math.abs(spread.pnlUsd! - credit) < 1e-9 && credit > 0);
-    else assert.ok(Math.abs(spread.pnlUsd! + maxLoss + 2 * 4.81 * 0.00015 * settle) < 0.01, `pnl ${spread.pnlUsd} vs ${-maxLoss}`);
+    else assert.ok(Math.abs(spread.pnlUsd! + maxLoss) < 0.01, `pnl ${spread.pnlUsd} vs ${-maxLoss}`);
   }
+  // The same crash on a Friday expiry pays 0.015% of the settlement price per in-the-money leg.
+  const { ex, step, spread } = setup();
+  await step();
+  ex.fill(LONG);
+  await step(5);
+  ex.fill(SHORT);
+  await step(5);
+  spread.expiryMs = Date.parse('2026-09-18T08:00:00Z');
+  const maxLoss = spread.openedAmount * spread.maxLossUsd;
+  settleSpread(BTC, spread, 70_000);
+  assert.ok(Math.abs(spread.pnlUsd! + maxLoss + 2 * 4.81 * 0.00015 * 70_000) < 0.01, `pnl ${spread.pnlUsd} vs ${-maxLoss} minus fees`);
 });
 
 function chain(spot: number, now: number): { options: Option[]; spot: number } {

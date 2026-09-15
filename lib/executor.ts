@@ -673,8 +673,12 @@ export async function stopJob(job: Job, spread: SpreadRecord, ctx: JobContext): 
 export function settleSpread(market: Market, spread: SpreadRecord, settle: number): void {
   const inv = inverse(market);
   const unit = (usd: number) => (inv ? usd / settle : usd);
+  // Deribit charges no delivery fee on BTC and ETH daily expiries (seen in the account's
+  // transaction log on 2026-09-15: zero on the BTC daily, 0.015% on the SOL daily and on
+  // Friday expiries). Weekly and monthly expiries are Fridays.
+  const dailyExempt = (market.id === 'BTC' || market.id === 'ETH') && new Date(spread.expiryMs).getUTCDay() !== 5;
   const fee = (intrinsicUsd: number) =>
-    intrinsicUsd > 0 ? Math.min(inv ? FEES.delivery : FEES.delivery * settle, FEES.capShare * unit(intrinsicUsd)) : 0;
+    intrinsicUsd > 0 && !dailyExempt ? Math.min(inv ? FEES.delivery : FEES.delivery * settle, FEES.capShare * unit(intrinsicUsd)) : 0;
   const call = spread.type === 'call';
   const shortIntrinsic = Math.max(call ? settle - spread.shortStrike : spread.shortStrike - settle, 0);
   const longIntrinsic = Math.max(call ? settle - spread.longStrike : spread.longStrike - settle, 0);
