@@ -337,11 +337,12 @@ export function openExit(spread: SpreadRecord, now: number): Job {
   };
 }
 
+// "long" is the protective leg (the lower put, or the higher call); "short" the sold one.
 export const LEG = {
-  'buy-long': { side: 'buy', leg: 'long', code: 'BL', step: 1, says: 'buying the long put' },
-  'sell-short': { side: 'sell', leg: 'short', code: 'SS', step: 2, says: 'selling the short put' },
-  'buy-short': { side: 'buy', leg: 'short', code: 'BS', step: 1, says: 'buying back the short put' },
-  'sell-long': { side: 'sell', leg: 'long', code: 'SL', step: 2, says: 'selling the long put' },
+  'buy-long': { side: 'buy', leg: 'long', code: 'BL', step: 1, says: 'buying the protective leg' },
+  'sell-short': { side: 'sell', leg: 'short', code: 'SS', step: 2, says: 'selling the short leg' },
+  'buy-short': { side: 'buy', leg: 'short', code: 'BS', step: 1, says: 'buying back the short leg' },
+  'sell-long': { side: 'sell', leg: 'long', code: 'SL', step: 2, says: 'selling the protective leg' },
 } as const;
 
 export function phaseLimitMs(job: Job, exec: ExecSettings): number {
