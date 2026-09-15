@@ -84,12 +84,10 @@
   .tip b { font-size: 14px; font-variant-numeric: tabular-nums; }
   .tip span { font-size: 11px; color: var(--ink-2); }
   .note { padding: 2px 16px 10px; font-size: 12px; color: var(--muted); }
-  details.data { padding: 0 16px 12px; font-size: 12px; }
-  details.data summary { cursor: pointer; color: var(--ink-2); }
 
-  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); border-top: 1px solid var(--border); overflow: hidden; }
+  .tiles { display: flex; flex-wrap: wrap; border-top: 1px solid var(--border); overflow: hidden; }
   /* Hairlines drawn by each tile, so an unfilled last row stays plain surface. */
-  .tile { display: grid; align-content: start; gap: 2px; padding: 12px 16px; background: var(--surface); box-shadow: 1px 0 0 var(--border), 0 1px 0 var(--border); }
+  .tile { flex: 1 1 176px; display: grid; align-content: start; gap: 2px; padding: 12px 16px; background: var(--surface); box-shadow: 1px 0 0 var(--border), 0 1px 0 var(--border); }
   .tile .value { font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
   .tile .cap { font-size: 11px; color: var(--muted); }
 
@@ -164,7 +162,6 @@
     </div>
     <div id="chart" class="chart"></div>
     <div id="chartNote" class="note"></div>
-    <details class="data"><summary>Daily values</summary><div id="daily" class="scroll"></div></details>
     <div id="tiles" class="tiles"></div>
   </section>
 
@@ -280,15 +277,6 @@
         ? `The demo account: ${money(a.capitalUsd, 0)} starting capital plus this bot's realised and unrealised P&L. Risk per spread and every percentage are measured against it, whatever the test exchange balance is.`
         : 'Everything in the exchange account, valued in dollars.') + seedNote;
 
-    const byDay = new Map();
-    for (const p of S.series) byDay.set(new Date(p.t).toISOString().slice(0, 10), p);
-    const days = [...byDay.entries()];
-    $('daily').innerHTML = days.length
-      ? `<table><thead><tr><th>Day (UTC)</th><th class="r">Account value</th><th class="r">Strategy P&amp;L</th><th class="r">Change that day</th></tr></thead><tbody>${days.map(([k, p], i) => {
-          const change = i ? p.strategyUsd - days[i - 1][1].strategyUsd : NaN;
-          return `<tr><td>${k}${S.seeded && k <= S.seeded.to ? ' <span class="chip">simulated</span>' : ''}</td><td class="r">${money(p.equityUsd)}</td><td class="r ${tone(p.strategyUsd)}">${signed(p.strategyUsd)}</td><td class="r ${tone(change)}">${signed(change)}</td></tr>`;
-        }).reverse().join('')}</tbody></table>`
-      : '<div class="muted">No samples yet.</div>';
 
     const ready = e.dailyReturns >= 7;
     const waiting = `needs 7 daily returns (${e.dailyReturns} so far)`;

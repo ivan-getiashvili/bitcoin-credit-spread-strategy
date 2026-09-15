@@ -151,6 +151,9 @@ closes. The page labels every simulated day and deal.
 - No "testnet / fake money / read-only" badge: the header carries a one-sentence
   strategy description instead. The red LIVE badge appears only in live mode.
 - No Activity (event log) panel.
+- No "Daily values" table under the chart (removed 2026-09-15).
+- The metric tiles wrap as a flex row so the last row stretches; no empty cell at
+  the bottom right.
 - Title and header: "Crypto Spread", after the domain.
 
 ## When the dailies trade (`npm run liquidity`, 2026-09-14)
