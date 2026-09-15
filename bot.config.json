@@ -9,7 +9,7 @@
   "capitalUsd": 100000,
   "riskPerTradePct": 1,
   "sizingSlackPct": 5,
-  "maxOpenSpreads": 3,
+  "maxOpenSpreads": 4,
   "alertDistancePct": 0.5,
   "entry": { "fromUtc": "08:05", "toUtc": "10:00", "weekdays": [5] },
   "strategy": { "expiry": "weekly", "minDaysToExpiry": 5, "distanceAtr": 0.5, "atrDays": 14, "longSteps": 2 },
