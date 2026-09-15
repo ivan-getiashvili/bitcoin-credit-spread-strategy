@@ -129,8 +129,9 @@ closes. The page labels every simulated day and deal.
   strategy description instead. The red LIVE badge appears only in live mode.
 - No Activity (event log) panel.
 - No "Daily values" table under the chart (removed 2026-09-15).
-- The metric tiles wrap as a flex row so the last row stretches; no empty cell at
-  the bottom right.
+- The metric tiles are an aligned grid; each tile draws only its own top and left
+  hairlines, so the empty cells at the end of the last row show no borders (Ivan
+  disliked both the stretched last row and the bordered empty cell).
 - Title and header: "Crypto Spread", after the domain.
 
 ## When the dailies trade (`npm run liquidity`, 2026-09-14)
