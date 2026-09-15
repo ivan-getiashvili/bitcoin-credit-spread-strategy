@@ -15,6 +15,7 @@
     "grid": "node --experimental-strip-types scripts/grid-search.ts",
     "wing-test": "node --experimental-strip-types scripts/wing-test.ts",
     "liquidity": "node --experimental-strip-types scripts/liquidity.ts",
+    "atr": "node --experimental-strip-types scripts/atr-search.ts",
     "backtest": "node --experimental-strip-types scripts/backtest.ts",
     "bot": "node --experimental-strip-types scripts/bot.ts",
     "worker:dev": "wrangler dev --test-scheduled",

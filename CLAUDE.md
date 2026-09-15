@@ -367,6 +367,32 @@ Results:
 - **5% risk per spread** does not change the edge; it multiplies results by 2.5.
   The current setting would have lost 99% of the account (93% with combo fees).
 
+## ATR-based strikes (`npm run atr`, 2026-09-15)
+
+Ivan asked whether choosing the strikes from each coin's recent daily range (ATR)
+instead of "first and second strike below" would make the strategy profitable.
+`scripts/atr-search.ts`: ATR = mean absolute settlement-to-settlement move over the
+last 14 days; sold put at the highest strike at least k × ATR below, bought put
+1-3 strikes or 0.5-2 ATR lower; far strikes priced by Black-76 at the nearest
+traded strike's volatility; 1% risk, 5% slack, fees; chosen in-sample (to 2025),
+judged on 2026. 84 settings per coin.
+- **How often a 1-day put is breached** (BTC, median ATR 1.57%): 0.5 × ATR below
+  30%, 1 × ATR 18%, 1.5 × ATR 11.5%, 2 × ATR 7.6%. ETH (median ATR 2.35%) is the
+  same within a point. 2026 matches the whole period. The current setting sits
+  only ~0.2 × ATR below the price and is breached ~40% of days.
+- **No ATR setting is profitable both in-sample and in 2026: 0 of 84 for BTC, 0
+  of 84 for ETH**, at mid or at bid/ask. Further strikes raise the win rate (to
+  ~94% at 2 × ATR) but max loss : credit rises faster (47:1), and fees stay
+  20-30% of the credit because the premium of a 1-day far put is a few dollars
+  against a fixed ~$23 per leg. ETH's best in-sample settings (0.5-0.75 × ATR,
+  PF 1.24) lost in 2026 (PF 0.6-0.7).
+- **The long leg:** on a 1-day spread it rarely changes the outcome (few days
+  move through both strikes); wider wings cut the fee share but raise
+  loss:credit. No width turns the daily strategy positive.
+- **Conclusion given to Ivan:** the daily expiry is the structural problem
+  (fixed fees vs one day of premium). Next thing worth testing: the same
+  ATR-distance idea on the weekly expiry, where premium per leg fee is ~2.6×.
+
 ## Hard rules for code
 
 1. **Limit orders only.** Post-only at the mid first; after `takeMinutes` a leg may
