@@ -71,7 +71,8 @@ Part of `~/projects/algorithmic-trading-strategies/`.
       - `commands`: manual actions.
       The dashboard metrics come from a running summary in the state (`EquityAgg`),
       never from reading `samples` back.
-    - **Dashboard:** `GET /` and `GET /api/state` only, read-only; anything else is
+    - **Dashboard:** read-only. `GET /`, `/api/state`, `/llms.txt` (also
+      `/llms-full.txt`, `/index.md`), `/robots.txt`, `/sitemap.xml`; anything else is
       404, and POST is 405. The page polls `/api/state` every minute.
     - **Manual actions:** insert a row through the Cloudflare connector's D1 query,
       e.g. `INSERT INTO commands (kind, payload) VALUES ('enter', '{"market":"BTC"}')`.
@@ -121,6 +122,45 @@ closes. The page labels every simulated day and deal.
 - Seed of 2026-09-15 (settlements 10 Jul - 11 Sep): 20 deals, +$1,171. ETH puts
   10 of 10 won (+$2,123); BTC calls 6 of 10 (−$951): the week BTC jumped from 64k
   to 76k cost a full loss.
+
+## Readable by AI assistants, crawlers and link previews (`lib/summary.ts`, 2026-09-17)
+
+Ivan: "if another AI gets the link, it gets all the information"; he plans to submit
+the site to a platform with AI matching, and called this critically important.
+- **The problem found:** bots were never blocked (25 crawler and library user agents
+  all got 200; Cloudflare's AI-bot blocking, bot fight mode and managed robots.txt
+  are off), but the page draws itself with JavaScript, so a fetch without a browser
+  got 248 characters: "connecting…" and dashes. No description tag, no README in
+  the repository, a stale repository description.
+- **The fix:** `summarize(view)` builds everything the dashboard shows (headline
+  figures, the 15 metrics, open spreads, working orders, positions, coin plans,
+  finished deals, the equity curve as one row per day, the trading rules, links) as
+  blocks, rendered two ways:
+  - **HTML inside the page**, in `<section id="static">` at the top of `<main>`. A
+    one-line script in the head sets the class `js` on `<html>`, and `.js #static`
+    is hidden, so people see the dashboard exactly as before and readers without
+    JavaScript see the text. Not cloaking: it is the same information, and with
+    scripts off a person sees it too (`<noscript>` hides the empty dashboard shell).
+  - **Markdown** at `/llms.txt`, and at `/` when the request says
+    `Accept: text/markdown` without `text/html`.
+- The Worker fills two markers in page/index.html, `<!--HEAD:…-->` (description,
+  canonical, Open Graph, schema.org JSON-LD, the text alternatives, and the
+  `__SNAPSHOT_URL__` script) and `<!--STATIC:…-->`. It refuses to start if either
+  is missing, and `test/summary.test.ts` checks them too.
+- Placeholders ("connecting…", "–") are written by the page's script, never in the
+  markup, so a machine cannot read them as data.
+- **Keep it in step:** anything added to the dashboard needs its line in
+  `summarize`. The wording of `about()` mirrors the header sentence in the page.
+- **CPU:** the text is rebuilt once per snapshot and cached in the isolate; about
+  1 ms on the Mac. Numbers are formatted by hand because `toLocaleString` is slow.
+- `/robots.txt` allows everyone, with content signals search, ai-input and ai-train
+  all yes. `/api/state` and the Markdown send `Access-Control-Allow-Origin: *`.
+- **Local check without keys:** the `worker-nokeys` entry in `.claude/launch.json`
+  runs `wrangler dev --env-file /dev/null` on port 8799 with its own local database,
+  so the local cycle cannot log in to Deribit. Plain `npm run worker:dev` loads the
+  keys from `.env` and its alarm starts a second bot on the same account.
+- README.md (added the same day) says the same for people and AI reading the
+  repository.
 
 ## Dashboard (page/index.html), Ivan's wishes 2026-09-14
 
@@ -307,7 +347,7 @@ The code is split so a strategy change happens in one place:
   - Order timeouts are resolved by label lookup.
   - A crash mid-placement is recovered through `pendingLabel`.
 - **Verified:**
-  - 24 tests (`npm test`).
+  - 41 tests (`npm test`).
   - 2026-09-13 on the test exchange: authentication, account and positions read,
     and a limit order placed, found by label, moved and cancelled
     (non-filling).
@@ -488,7 +528,7 @@ delivery fees on Fridays. Ranked in-sample (to 2025-12-31), judged on 2026.
 
 ```
 git push origin main   # deploys to Cloudflare (Workers Builds runs npm test first)
-npm test               # execution, metrics and equity-summary tests
+npm test               # execution, metrics, equity-summary and text-version tests
 npm run worker:dev     # the Worker locally; curl localhost:8787/__scheduled runs a cycle
 npm run worker:bundle  # bundle check without deploying (dist/)
 npm run bot            # local runner + dashboards; never alongside the live Worker

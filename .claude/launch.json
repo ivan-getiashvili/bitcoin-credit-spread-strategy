@@ -21,6 +21,21 @@
         "8787"
       ],
       "port": 8787
+    },
+    {
+      "name": "worker-nokeys",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "wrangler",
+        "dev",
+        "--env-file",
+        "/dev/null",
+        "--persist-to",
+        ".wrangler/nokeys-state",
+        "--port",
+        "8799"
+      ],
+      "port": 8799
     }
   ]
 }

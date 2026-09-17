@@ -9,6 +9,10 @@
  *   lets only one cycle run at a time and keeps cycles about a minute apart.
  * - The same Worker serves the public, read-only dashboard: GET / and GET /api/state.
  *   Nothing reachable from the internet can trade.
+ * - The page draws itself in the browser, so for readers that do not run JavaScript (AI
+ *   assistants, crawlers, link previews) the Worker also writes the same content into the
+ *   page as text, and serves it as Markdown at /llms.txt (lib/summary.ts), with a
+ *   robots.txt that welcomes every crawler and a sitemap.
  * - Memory lives in the D1 database `cryptospread`: the bot's state, the latest dashboard
  *   data, and the account value once a minute.
  * - Manual actions are rows in the `commands` table, which only someone with access to
@@ -27,6 +31,7 @@ import { DeribitBroker, type Broker } from '../lib/broker.ts';
 import type { MarketId } from '../lib/markets.ts';
 import type { EquitySample } from '../lib/metrics.ts';
 import type { Seed } from '../lib/seed.ts';
+import { headTags, SITE, summarize, toHtml, toMarkdown, type StrategyFacts } from '../lib/summary.ts';
 import { emptyState, mergeState } from '../lib/state.ts';
 
 export interface Env {
@@ -50,7 +55,33 @@ const ALARM_EVERY_MS = 60_000;
 /** Dashboard data older than this means the timers may have stopped; a page view restarts the alarm. */
 const STALE_MS = 3 * 60_000;
 
-const PAGE = page.replace('<script>', `<script>window.__SNAPSHOT_URL__ = '/api/state';</script>\n<script>`);
+// The placeholders in page/index.html that each request fills with the text version of the dashboard.
+const HEAD_SLOT = /<!--HEAD:[^>]*-->/;
+const STATIC_SLOT = /<!--STATIC:[^>]*-->/;
+if (!HEAD_SLOT.test(page) || !STATIC_SLOT.test(page)) throw new Error('page/index.html has lost a marker the Worker fills in');
+/** Tells the page to poll /api/state; without it the page expects the local runner's event stream. */
+const SNAPSHOT_TAG = "<script>window.__SNAPSHOT_URL__ = '/api/state';</script>";
+
+/** The strategy as configured, for the text version before the bot's first cycle has written any data. */
+const FACTS: StrategyFacts = {
+  entry: config.entry,
+  strategy: config.strategy,
+  markets: IDS.map((id) => ({ id, enabled: config.markets[id].enabled, structure: config.markets[id].structure })),
+  riskPct: config.riskPerTradePct,
+  capitalUsd: config.capitalUsd,
+  mode: config.mode,
+  execution: config.execution as unknown as Record<string, number>,
+  maxOpenSpreads: config.maxOpenSpreads,
+};
+
+const ROBOTS = `# Everyone is welcome: search engines, AI assistants, AI crawlers, link previews.
+# The same content as text: ${SITE}/llms.txt   As data: ${SITE}/api/state
+User-agent: *
+Content-Signal: search=yes, ai-input=yes, ai-train=yes
+Allow: /
+
+Sitemap: ${SITE}/sitemap.xml
+`;
 
 const SCHEMA = [
   // key 'state': the bot's full state as JSON; 'view': the latest dashboard data; 'lease': one cycle at a time.
@@ -239,6 +270,42 @@ const scheduler = (env: Env) => env.SCHEDULER.get(env.SCHEDULER.idFromName('bot'
 
 const SECURITY_HEADERS = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' };
 
+/** The latest dashboard data as saved by the bot. A reader is also the watchdog: stale data restarts the alarm. */
+async function latestView(env: Env, ctx: ExecutionContext): Promise<string | null> {
+  await ensureSchema(env.DB);
+  const view = await kvGet(env.DB, 'view');
+  // The data is written last in each cycle, so its age shows whether the timers still run.
+  const at = Number(view?.match(/"snapshotAt":(\d+)}$/)?.[1] ?? 0);
+  if (Date.now() - at > STALE_MS) ctx.waitUntil(scheduler(env).ensure());
+  return view;
+}
+
+/** The text version is rebuilt once per snapshot, not once per request. */
+let rendered: { key: string; html: string; markdown: string; updated: string | null } | null = null;
+function textVersion(view: string | null) {
+  const key = view?.match(/"snapshotAt":(\d+)}$/)?.[1] ?? 'none';
+  if (rendered?.key !== key) {
+    let data: unknown = null;
+    try { data = view ? JSON.parse(view) : null; } catch { /* unreadable data reads as "no data yet" */ }
+    const s = summarize(data, FACTS);
+    rendered = {
+      key,
+      html: page
+        .replace(HEAD_SLOT, () => `${headTags(s)}\n${SNAPSHOT_TAG}`)
+        .replace(STATIC_SLOT, () => `<section id="static" aria-label="Text version of the dashboard">\n${toHtml(s)}\n</section>`),
+      markdown: toMarkdown(s),
+      updated: s.updated,
+    };
+  }
+  return rendered;
+}
+
+/** True when the client asks for Markdown and not for HTML, as AI agents increasingly do. */
+const wantsMarkdown = (request: Request) => {
+  const accept = request.headers.get('Accept') ?? '';
+  return accept.includes('text/markdown') && !accept.includes('text/html');
+};
+
 export default {
   async scheduled(_controller, env, ctx) {
     ctx.waitUntil(scheduler(env).ensure());
@@ -250,19 +317,29 @@ export default {
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return new Response('Method not allowed', { status: 405, headers: { Allow: 'GET, HEAD', ...SECURITY_HEADERS } });
     }
-    if (url.pathname === '/' || url.pathname === '/index.html') {
-      return new Response(PAGE, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', ...SECURITY_HEADERS } });
+    const isPage = url.pathname === '/' || url.pathname === '/index.html';
+    if (['/llms.txt', '/llms-full.txt', '/index.md'].includes(url.pathname) || (isPage && wantsMarkdown(request))) {
+      const text = textVersion(await latestView(env, ctx));
+      return new Response(text.markdown, { headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Cache-Control': 'no-cache', Vary: 'Accept', 'Access-Control-Allow-Origin': '*', ...SECURITY_HEADERS } });
+    }
+    if (isPage) {
+      const text = textVersion(await latestView(env, ctx));
+      return new Response(text.html, { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache', Vary: 'Accept', ...SECURITY_HEADERS } });
     }
     if (url.pathname === '/api/state') {
-      await ensureSchema(env.DB);
-      const view = await kvGet(env.DB, 'view');
-      // The data is written last in each cycle, so its age shows whether the timers still run.
-      const at = Number(view?.match(/"snapshotAt":(\d+)}$/)?.[1] ?? 0);
-      if (Date.now() - at > STALE_MS) ctx.waitUntil(scheduler(env).ensure());
+      const view = await latestView(env, ctx);
       return new Response(view ?? JSON.stringify({ error: 'The bot has not completed its first cycle yet.' }), {
         status: view ? 200 : 503,
-        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...SECURITY_HEADERS },
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*', ...SECURITY_HEADERS },
       });
+    }
+    if (url.pathname === '/robots.txt') {
+      return new Response(ROBOTS, { headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=3600', ...SECURITY_HEADERS } });
+    }
+    if (url.pathname === '/sitemap.xml') {
+      const updated = textVersion(await latestView(env, ctx)).updated;
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>${SITE}/</loc>${updated ? `<lastmod>${updated}</lastmod>` : ''}<changefreq>always</changefreq></url>\n</urlset>\n`;
+      return new Response(xml, { headers: { 'Content-Type': 'application/xml; charset=utf-8', 'Cache-Control': 'public, max-age=3600', ...SECURITY_HEADERS } });
     }
     return new Response('Not found', { status: 404, headers: SECURITY_HEADERS });
   },

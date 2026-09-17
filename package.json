@@ -2,7 +2,7 @@
   "name": "bitcoin-credit-spread-strategy",
   "version": "0.1.0",
   "private": true,
-  "description": "Finds, backtests and evaluates defined-risk put credit spreads on BTC, ETH and SOL options.",
+  "description": "Automated bot that sells weekly credit spreads on BTC and ETH options at Deribit, with a live public dashboard at https://cryptospread.trade.",
   "type": "module",
   "engines": {
     "node": ">=22.6"
@@ -23,7 +23,7 @@
     "bot": "node --experimental-strip-types scripts/bot.ts",
     "worker:dev": "wrangler dev --test-scheduled",
     "worker:bundle": "wrangler deploy --dry-run --outdir dist",
-    "test": "node --experimental-strip-types --test test/executor.test.ts test/metrics.test.ts test/equity-agg.test.ts test/seed.test.ts"
+    "test": "node --experimental-strip-types --test test/executor.test.ts test/metrics.test.ts test/equity-agg.test.ts test/seed.test.ts test/summary.test.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260914.1",

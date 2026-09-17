@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Crypto Spread</title>
+<!--HEAD: the Worker writes the description, link-preview and schema.org tags here (lib/summary.ts)-->
+<script>document.documentElement.classList.add('js');</script>
 <style>
   :root {
     color-scheme: light;
@@ -125,16 +127,28 @@
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.act:disabled { opacity: .45; cursor: not-allowed; }
 
+  /* The same content as text, written into the page by the server for readers that do not
+     run JavaScript: AI assistants, crawlers, link previews (lib/summary.ts). With scripts on,
+     the dashboard below replaces it. */
+  .js #static { display: none; }
+  #static { display: grid; gap: 10px; overflow-x: auto; font-size: 14px; line-height: 1.5; }
+  #static h2 { margin: 12px 0 0; font-size: 15px; }
+  #static p, #static ul { margin: 0; }
+  #static ul { padding-left: 20px; }
+  #static table { border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  #static th, #static td { padding: 4px 12px 4px 0; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
 </style>
+<noscript><style>main > :not(#static), header .conn { display: none; }</style></noscript>
 </head>
 <body>
 <header>
   <h1>Crypto Spread</h1>
   <span id="mode" class="mode" hidden></span>
-  <span class="conn"><span id="dot" class="dot"></span><span id="conn">connecting…</span></span>
+  <span class="conn"><span id="dot" class="dot"></span><span id="conn"></span></span>
   <span id="window" class="window"></span>
 </header>
 <main>
+  <!--STATIC: the Worker writes the text version of the dashboard here (lib/summary.ts)-->
   <p id="about" class="about"></p>
   <div id="banners"></div>
 
@@ -142,17 +156,17 @@
     <div class="perf-head">
       <div>
         <div id="heroLabel" class="label">Account value</div>
-        <div id="hero" class="hero">–</div>
+        <div id="hero" class="hero"></div>
         <div id="heroSub" class="sub"></div>
       </div>
       <div>
         <div class="label">Unrealised P&amp;L</div>
-        <div id="unreal" class="figure">–</div>
+        <div id="unreal" class="figure"></div>
         <div id="unrealSub" class="sub"></div>
       </div>
       <div>
         <div class="label">Realised P&amp;L</div>
-        <div id="realised" class="figure">–</div>
+        <div id="realised" class="figure"></div>
         <div id="realisedSub" class="sub"></div>
       </div>
       <div class="seg" role="group" aria-label="Curve">
@@ -211,6 +225,10 @@
   const STATE = { safe: 'Safe', watch: 'Near sold strike', breached: 'Past sold strike' };
   const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const MARGIN = { segregated_sm: 'standard margin', cross_sm: 'standard margin, cross', segregated_pm: 'portfolio margin', cross_pm: 'portfolio margin, cross' };
+
+  // Placeholders are written here, not in the HTML, so a reader without JavaScript never sees "connecting…" or dashes as if they were data.
+  $('conn').textContent = 'connecting…';
+  for (const id of ['hero', 'unreal', 'realised']) $(id).textContent = '–';
 
   let S = null;
   let received = 0;
